@@ -17,24 +17,29 @@ The full product plan lives in `context-manager-csharp-final.md` at the repo roo
 
 ```
 ContextManager.sln
-ContextManager/                    # MCP server console app entry point
-  ContextManager.csproj
-  Program.cs
+src/
+  ContextManager.Mcp/              # MCP server console app entry point
+    ContextManager.Mcp.csproj
+    Program.cs
+  ContextManager.Analysis/         # Roslyn analysis class library
+    ContextManager.Analysis.csproj
+tests/
+  ContextManager.Analysis.Tests/   # MSTest test project
+    ContextManager.Analysis.Tests.csproj
+    Fixtures/                      # Real .cs files parsed at test runtime
 context-manager-csharp-final.md    # full product plan
 .spec/<feature-slug>/              # SDD artifacts per feature
 ```
-
-The plan describes an eventual split into `src/ContextManager.Mcp/` (server) and `src/ContextManager.Analysis/` (Roslyn core) with `tests/` alongside. Follow whatever the current SDD `design.md` specifies; do not preemptively reorganize.
 
 ## Setup Commands
 
 - Restore: `dotnet restore`
 - Build: `dotnet build`
-- Run the MCP server (stdio): `dotnet run --project ContextManager/ContextManager.csproj`
+- Run the MCP server (stdio): `dotnet run --project src/ContextManager.Mcp/ContextManager.Mcp.csproj`
 
 ## Testing
 
-- Test framework: **xUnit** (introduce when the first test project is added).
+- Test framework: **MSTest**.
 - Run all tests: `dotnet test`
 - Run a single test project: `dotnet test tests/<Project>.Tests/<Project>.Tests.csproj`
 - Filter by name: `dotnet test --filter "FullyQualifiedName~OrderService"`
