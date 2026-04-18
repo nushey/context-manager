@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "agents-md": {
+      "command": "agents-md-generator"
+    }
+  }
+}
