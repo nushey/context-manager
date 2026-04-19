@@ -71,13 +71,6 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-### MCP Inspector (manual testing)
-
-```bash
-dotnet build
-npx @modelcontextprotocol/inspector dotnet run --no-build --project src/ContextManager.Mcp/ContextManager.Mcp.csproj
-```
-
 ## Output example
 
 ```json
