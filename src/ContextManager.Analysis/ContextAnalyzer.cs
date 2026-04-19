@@ -40,7 +40,6 @@ public class ContextAnalyzer
         foreach (var path in filePaths)
         {
             var tree = treeByPath[path];
-            var model = compilation.GetSemanticModel(tree);
             var root = (Microsoft.CodeAnalysis.CSharp.Syntax.CompilationUnitSyntax)tree.GetRoot(ct);
 
             string? ns = null;
