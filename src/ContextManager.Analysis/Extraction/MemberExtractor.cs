@@ -36,10 +36,13 @@ public static class MemberExtractor
                 p.Identifier.ValueText))
             .ToList());
 
+        var delegateSpan = node.GetLocation().GetLineSpan();
         var syntheticMethod = new Models.MethodInfo(
             Name: name,
             Access: access,
             ReturnType: node.ReturnType.ToString(),
+            StartLine: delegateSpan.StartLinePosition.Line + 1,
+            EndLine: delegateSpan.EndLinePosition.Line + 1,
             Parameters: parameters,
             Attributes: null);
 
@@ -172,11 +175,14 @@ public static class MemberExtractor
 
             var parameters = NullIfEmpty(MapParameters(method.ParameterList.Parameters));
             var methodAttrs = NullIfEmpty(AttributeExtractor.Render(method.AttributeLists));
+            var lineSpan = method.GetLocation().GetLineSpan();
 
             result.Add(new Models.MethodInfo(
                 Name: method.Identifier.ValueText,
                 Access: methodAccess,
                 ReturnType: method.ReturnType.ToString(),
+                StartLine: lineSpan.StartLinePosition.Line + 1,
+                EndLine: lineSpan.EndLinePosition.Line + 1,
                 Parameters: parameters,
                 Attributes: methodAttrs));
         }
