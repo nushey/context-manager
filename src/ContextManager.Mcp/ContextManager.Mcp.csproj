@@ -8,7 +8,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>context-manager</ToolCommandName>
         <PackageId>ContextManager</PackageId>
-        <Version>1.0.1</Version>
+        <Version>1.0.2</Version>
         <Description>MCP server that uses Roslyn to extract structural context from C# source files for AI coding agents.</Description>
         <Authors>nushey</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
