@@ -11,6 +11,10 @@ public static class DtoDetector
 
     public static bool IsDto(TypeDeclarationSyntax node, string name)
     {
+        // Behavioral types (inherits or implements) are never DTOs
+        if (node.BaseList is not null && node.BaseList.Types.Count > 0)
+            return false;
+
         // Branch (a): no method declarations at all
         if (!node.Members.OfType<MethodDeclarationSyntax>().Any())
             return true;

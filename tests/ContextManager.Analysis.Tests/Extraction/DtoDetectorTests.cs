@@ -105,6 +105,27 @@ public class DtoDetectorTests
     }
 
     [TestMethod]
+    public void ClassWithBaseClass_ReturnsFalse()
+    {
+        var node = ParseFirstType("class AdmPermisos : ApiControllerBase { public int X { get; set; } }");
+        Assert.IsFalse(DtoDetector.IsDto(node, "AdmPermisos"));
+    }
+
+    [TestMethod]
+    public void ClassWithInterface_ReturnsFalse()
+    {
+        var node = ParseFirstType("class MyService : IRoutable { public int X { get; set; } }");
+        Assert.IsFalse(DtoDetector.IsDto(node, "MyService"));
+    }
+
+    [TestMethod]
+    public void ClassWithBaseAndInterface_ReturnsFalse()
+    {
+        var node = ParseFirstType("class AdmPermisos : ApiControllerBase, IRoutable { }");
+        Assert.IsFalse(DtoDetector.IsDto(node, "AdmPermisos"));
+    }
+
+    [TestMethod]
     public void AllBranchesFail_ReturnsFalse()
     {
         // Has a method (a=false), has a parameterized ctor (b=false), no known suffix (c=false)
