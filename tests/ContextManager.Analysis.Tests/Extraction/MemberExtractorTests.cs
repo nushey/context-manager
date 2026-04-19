@@ -178,7 +178,7 @@ public class MemberExtractorTests
         var node = ParseFirstType(snippet);
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.IsFalse(result.Properties.Any(p => p.Name == "_counter"));
+        Assert.IsFalse(result.Properties?.Any(p => p.Name == "_counter") == true);
     }
 
     // ── Interface ─────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ public class MemberExtractorTests
         var node = ParseFirstType(snippet);
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.ConstructorDependencies.Count);
+        Assert.IsNull(result.ConstructorDependencies);
     }
 
     [TestMethod]
@@ -350,7 +350,7 @@ public class MemberExtractorTests
         var node = ParseFirstType(snippet);
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.Properties.Count);
+        Assert.IsNull(result.Properties);
     }
 
     // ── Declaration order ─────────────────────────────────────────────────────
@@ -484,7 +484,7 @@ public class MemberExtractorTests
         var node = ParseEnumFromFixture(@"Fixtures/OrderStatus.cs");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.Methods.Count);
+        Assert.IsNull(result.Methods);
     }
 
     [TestMethod]
@@ -493,7 +493,7 @@ public class MemberExtractorTests
         var node = ParseEnumFromFixture(@"Fixtures/OrderStatus.cs");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.Properties.Count);
+        Assert.IsNull(result.Properties);
     }
 
     [TestMethod]
@@ -502,7 +502,7 @@ public class MemberExtractorTests
         var node = ParseEnumFromFixture(@"Fixtures/OrderStatus.cs");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.ConstructorDependencies.Count);
+        Assert.IsNull(result.ConstructorDependencies);
     }
 
     // ── Delegate ──────────────────────────────────────────────────────────────
@@ -572,7 +572,7 @@ public class MemberExtractorTests
         var node = ParseFirstDelegate("public delegate void Notify(string message);");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.Properties.Count);
+        Assert.IsNull(result.Properties);
     }
 
     [TestMethod]
@@ -581,6 +581,6 @@ public class MemberExtractorTests
         var node = ParseFirstDelegate("public delegate void Notify(string message);");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(0, result.ConstructorDependencies.Count);
+        Assert.IsNull(result.ConstructorDependencies);
     }
 }

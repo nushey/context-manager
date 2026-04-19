@@ -227,7 +227,7 @@ public class FileAnalyzerTests
         Assert.IsInstanceOfType(result, typeof(FileAnalysis));
         var analysis = (FileAnalysis)result;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRecord");
-        Assert.IsFalse(type.Methods.Any(m => m.Name == "CreateOrderRecord"));
+        Assert.IsFalse(type.Methods?.Any(m => m.Name == "CreateOrderRecord") == true);
     }
 
     // ── Money (struct) ────────────────────────────────────────────────────────
@@ -304,7 +304,7 @@ public class FileAnalyzerTests
         Assert.IsInstanceOfType(result, typeof(FileAnalysis));
         var analysis = (FileAnalysis)result;
         var type = analysis.Types.First(t => t.Name == "OrderSummary");
-        Assert.AreEqual(0, type.Properties.Count);
+        Assert.IsNull(type.Properties);
     }
 
     // ── DTO branch (b): parameterless ctor + auto-properties ─────────────────
@@ -328,7 +328,7 @@ public class FileAnalyzerTests
         Assert.IsInstanceOfType(result, typeof(FileAnalysis));
         var analysis = (FileAnalysis)result;
         var type = analysis.Types.First(t => t.Name == "CustomerInfo");
-        Assert.AreEqual(0, type.Properties.Count);
+        Assert.IsNull(type.Properties);
     }
 
     // ── DTO branch (c): suffix-based ──────────────────────────────────────────
@@ -352,7 +352,7 @@ public class FileAnalyzerTests
         Assert.IsInstanceOfType(result, typeof(FileAnalysis));
         var analysis = (FileAnalysis)result;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRequest");
-        Assert.AreEqual(0, type.Properties.Count);
+        Assert.IsNull(type.Properties);
     }
 
     // ── File metadata ─────────────────────────────────────────────────────────
