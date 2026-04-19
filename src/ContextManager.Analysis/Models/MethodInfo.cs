@@ -7,4 +7,5 @@ public sealed record MethodInfo(
     int StartLine,
     int EndLine,
     IReadOnlyList<ParameterInfo>? Parameters,
-    IReadOnlyList<string>? Attributes);
+    IReadOnlyList<string>? Attributes,
+    IReadOnlyList<string>? GenericConstraints = null);

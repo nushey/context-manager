@@ -88,6 +88,8 @@ public static class MemberExtractor
             properties = null;
         }
 
+        bool? isPartial = node.Modifiers.Any(m => m.ValueText == "partial") ? true : null;
+
         return new TypeInfo(
             Name: name,
             Kind: kind,
@@ -98,7 +100,8 @@ public static class MemberExtractor
             ConstructorDependencies: constructorDeps,
             Methods: methods,
             Properties: properties,
-            Members: null);
+            Members: null,
+            IsPartial: isPartial);
     }
 
     public static TypeInfo Build(RecordDeclarationSyntax node, bool isTopLevel)
@@ -176,6 +179,10 @@ public static class MemberExtractor
             var parameters = NullIfEmpty(MapParameters(method.ParameterList.Parameters));
             var methodAttrs = NullIfEmpty(AttributeExtractor.Render(method.AttributeLists));
             var lineSpan = method.GetLocation().GetLineSpan();
+            var genericConstraints = NullIfEmpty(
+                method.ConstraintClauses
+                    .Select(c => c.ToString())
+                    .ToList());
 
             result.Add(new Models.MethodInfo(
                 Name: method.Identifier.ValueText,
@@ -184,7 +191,8 @@ public static class MemberExtractor
                 StartLine: lineSpan.StartLinePosition.Line + 1,
                 EndLine: lineSpan.EndLinePosition.Line + 1,
                 Parameters: parameters,
-                Attributes: methodAttrs));
+                Attributes: methodAttrs,
+                GenericConstraints: genericConstraints));
         }
 
         return result;
@@ -202,10 +210,13 @@ public static class MemberExtractor
             if (propAccess == "private")
                 continue;
 
+            bool? isRequired = prop.Modifiers.Any(m => m.ValueText == "required") ? true : null;
+
             result.Add(new Models.PropertyInfo(
                 Name: prop.Identifier.ValueText,
                 Type: prop.Type.ToString(),
-                Access: propAccess));
+                Access: propAccess,
+                IsRequired: isRequired));
         }
 
         foreach (var field in node.Members.OfType<FieldDeclarationSyntax>())
