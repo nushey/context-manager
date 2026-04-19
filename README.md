@@ -25,23 +25,31 @@ Reading a 1 500-line C# file costs an agent thousands of tokens on every call. C
 
 ### Prerequisites
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8)
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) or later — verify with `dotnet --version`
 
-### Install as a global dotnet tool
+That's it. No Python, no Node, no Docker.
+
+### 1. Install the tool
 
 ```bash
 dotnet tool install -g ContextManager
 ```
 
-After installation the server is available as:
+Verify the install:
 
 ```bash
-context-manager
+context-manager --version
 ```
 
-### Claude Code
+### 2. Add to your MCP client
 
-Add to your project `.mcp.json`:
+**Claude Code (recommended — one command):**
+
+```bash
+claude mcp add context-manager -- context-manager
+```
+
+**Claude Code (manual — add to `.mcp.json` in your project root):**
 
 ```json
 {
@@ -53,9 +61,7 @@ Add to your project `.mcp.json`:
 }
 ```
 
-### Claude Desktop
-
-Add to your `claude_desktop_config.json`:
+**Claude Desktop — add to `claude_desktop_config.json`:**
 
 ```json
 {
@@ -65,6 +71,12 @@ Add to your `claude_desktop_config.json`:
     }
   }
 }
+```
+
+### Updating
+
+```bash
+dotnet tool update -g ContextManager
 ```
 
 ## Output examples
