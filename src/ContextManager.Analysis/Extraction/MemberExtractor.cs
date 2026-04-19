@@ -9,7 +9,7 @@ public static class MemberExtractor
     {
         var name = node.Identifier.ValueText;
         var access = AccessLevel.FromModifiers(node.Modifiers, isTopLevel);
-        var attributes = AttributeExtractor.Render(node.AttributeLists);
+        var attributes = NullIfEmpty(AttributeExtractor.Render(node.AttributeLists));
         var members = node.Members.Select(m => m.Identifier.ValueText).ToList();
 
         return new TypeInfo(
@@ -17,11 +17,11 @@ public static class MemberExtractor
             Kind: "enum",
             Access: access,
             Base: null,
-            Implements: [],
+            Implements: null,
             Attributes: attributes,
-            ConstructorDependencies: [],
-            Methods: [],
-            Properties: [],
+            ConstructorDependencies: null,
+            Methods: null,
+            Properties: null,
             Members: members);
     }
 
@@ -29,30 +29,30 @@ public static class MemberExtractor
     {
         var name = node.Identifier.ValueText;
         var access = AccessLevel.FromModifiers(node.Modifiers, isTopLevel);
-        var attributes = AttributeExtractor.Render(node.AttributeLists);
-        var parameters = node.ParameterList.Parameters
+        var attributes = NullIfEmpty(AttributeExtractor.Render(node.AttributeLists));
+        var parameters = NullIfEmpty(node.ParameterList.Parameters
             .Select(p => new Models.ParameterInfo(
                 p.Type?.ToString() ?? string.Empty,
                 p.Identifier.ValueText))
-            .ToList();
+            .ToList());
 
         var syntheticMethod = new Models.MethodInfo(
             Name: name,
             Access: access,
             ReturnType: node.ReturnType.ToString(),
             Parameters: parameters,
-            Attributes: []);
+            Attributes: null);
 
         return new TypeInfo(
             Name: name,
             Kind: "delegate",
             Access: access,
             Base: null,
-            Implements: [],
+            Implements: null,
             Attributes: attributes,
-            ConstructorDependencies: [],
+            ConstructorDependencies: null,
             Methods: [syntheticMethod],
-            Properties: [],
+            Properties: null,
             Members: null);
     }
 
@@ -74,15 +74,15 @@ public static class MemberExtractor
 
         var (baseType, implements) = ExtractBaseList(node);
 
-        var constructorDeps = ExtractConstructorDependencies(node);
-        var methods = ExtractMethods(node);
-        var properties = ExtractProperties(node);
+        var constructorDeps = NullIfEmpty(ExtractConstructorDependencies(node));
+        var methods = NullIfEmpty(ExtractMethods(node));
+        var properties = NullIfEmpty(ExtractProperties(node));
 
         // Only apply DTO heuristic to classes and structs; records and interfaces keep their kind
         if (node is ClassDeclarationSyntax or StructDeclarationSyntax && DtoDetector.IsDto(node, name))
         {
             kind = "dto";
-            properties = [];
+            properties = null;
         }
 
         return new TypeInfo(
@@ -90,8 +90,8 @@ public static class MemberExtractor
             Kind: kind,
             Access: access,
             Base: baseType,
-            Implements: implements,
-            Attributes: attributes,
+            Implements: NullIfEmpty(implements),
+            Attributes: NullIfEmpty(attributes),
             ConstructorDependencies: constructorDeps,
             Methods: methods,
             Properties: properties,
@@ -170,8 +170,8 @@ public static class MemberExtractor
             if (methodAccess == "private")
                 continue;
 
-            var parameters = MapParameters(method.ParameterList.Parameters);
-            var methodAttrs = AttributeExtractor.Render(method.AttributeLists);
+            var parameters = NullIfEmpty(MapParameters(method.ParameterList.Parameters));
+            var methodAttrs = NullIfEmpty(AttributeExtractor.Render(method.AttributeLists));
 
             result.Add(new Models.MethodInfo(
                 Name: method.Identifier.ValueText,
@@ -183,6 +183,8 @@ public static class MemberExtractor
 
         return result;
     }
+
+    private static IReadOnlyList<T>? NullIfEmpty<T>(IReadOnlyList<T> list) => list.Count == 0 ? null : list;
 
     private static IReadOnlyList<Models.PropertyInfo> ExtractProperties(TypeDeclarationSyntax node)
     {
