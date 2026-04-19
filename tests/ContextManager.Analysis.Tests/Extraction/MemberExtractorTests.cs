@@ -229,6 +229,45 @@ public class MemberExtractorTests
     }
 
     [TestMethod]
+    public void Method_LineNumbers_AreCorrect()
+    {
+        var snippet = """
+            class Service {
+                public void First() {}
+                public void Second() {}
+            }
+            """;
+        var node = ParseFirstType(snippet);
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        var first = result.Methods![0];
+        var second = result.Methods![1];
+
+        Assert.AreEqual(2, first.StartLine);
+        Assert.AreEqual(2, first.EndLine);
+        Assert.AreEqual(3, second.StartLine);
+        Assert.AreEqual(3, second.EndLine);
+    }
+
+    [TestMethod]
+    public void Method_MultiLineMethod_StartAndEndDiffer()
+    {
+        var snippet = """
+            class Service {
+                public void DoWork()
+                {
+                    var x = 1;
+                }
+            }
+            """;
+        var node = ParseFirstType(snippet);
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        var method = result.Methods![0];
+        Assert.IsTrue(method.EndLine > method.StartLine);
+    }
+
+    [TestMethod]
     public void Interface_AllBaseEntriesAreImplements()
     {
         var snippet = """
@@ -558,7 +597,7 @@ public class MemberExtractorTests
         var node = ParseFirstDelegate("public delegate string OrderHandler(int orderId, string status);");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        var parameters = result.Methods[0].Parameters;
+        var parameters = result.Methods![0].Parameters!;
         Assert.AreEqual(2, parameters.Count);
         Assert.AreEqual("int", parameters[0].Type);
         Assert.AreEqual("orderId", parameters[0].Name);
