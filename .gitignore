@@ -488,5 +488,9 @@ fabric.properties
 .idea/caches/build_file_checksums.ser
 .spec/
 .spec
+.idea/
+output.txt
+run_inspector.txt
+nupkgs/
 
 # End of https://www.toptal.com/developers/gitignore/api/rider,csharp,dotnetcore

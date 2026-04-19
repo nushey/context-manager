@@ -53,8 +53,8 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 bold "Releasing v${VERSION} from branch '${CURRENT_BRANCH}' → main"
 
-# check working tree is clean (version bump aside)
-[[ -z "$(git status --porcelain)" ]] || die "Working tree is dirty — commit or stash changes first"
+# check working tree is clean — untracked files are fine, modified/staged are not
+[[ -z "$(git status --porcelain | grep -v '^??')" ]] || die "Working tree is dirty — commit or stash changes first"
 
 # ── 3. run tests ─────────────────────────────────────────────────────────────
 bold "\n▶ Running tests..."
