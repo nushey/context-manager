@@ -10,4 +10,5 @@ public sealed record TypeInfo(
     IReadOnlyList<ParameterInfo>? ConstructorDependencies,
     IReadOnlyList<MethodInfo>? Methods,
     IReadOnlyList<PropertyInfo>? Properties,
-    IReadOnlyList<string>? Members);
+    IReadOnlyList<string>? Members,
+    bool? IsPartial = null);
