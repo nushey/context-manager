@@ -23,6 +23,7 @@ public class ContextAnalyzerTests
     private static readonly string IOrderRepositoryPath = FixturePath("IOrderRepository.cs");
     private static readonly string OrderServicePath = FixturePath("OrderService.cs");
     private static readonly string OrderControllerPath = FixturePath("OrderController.cs");
+    private static readonly string BaseOrderServicePath = FixturePath("BaseOrderService.cs");
 
     private static IReadOnlyList<string> ThreeFilePaths =>
         [IOrderServicePath, IOrderRepositoryPath, OrderServicePath];
@@ -138,5 +139,41 @@ public class ContextAnalyzerTests
         var json2 = JsonSerializer.Serialize(result2, AnalysisJson.Options);
 
         Assert.AreEqual(json1, json2, "Serialized ContextAnalysis must be identical across two calls with the same input");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_OrderServiceExtendsBaseOrderService_ViaBaseWithResolvedFile()
+    {
+        var paths = new[] { BaseOrderServicePath, OrderServicePath, IOrderServicePath, IOrderRepositoryPath };
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync(paths);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.From == "OrderService" &&
+            r.To == "BaseOrderService" &&
+            r.Via == "base");
+
+        Assert.IsNotNull(reference, "Expected reference: OrderService extends BaseOrderService via base");
+        Assert.IsNotNull(reference.ResolvedFile, "ResolvedFile should be set for BaseOrderService (it's in the file set)");
+        Assert.IsTrue(
+            string.Equals(reference.ResolvedFile, BaseOrderServicePath, StringComparison.OrdinalIgnoreCase),
+            $"ResolvedFile should be the BaseOrderService fixture path, got: {reference.ResolvedFile}");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_MethodParameterBclType_ViaParameterAndInUnresolved()
+    {
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync(ThreeFilePaths);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.Via == "parameter" &&
+            r.To == "CancellationToken");
+
+        Assert.IsNotNull(reference, "Expected a reference with Via == \"parameter\" and To == \"CancellationToken\"");
+        Assert.IsNull(reference.ResolvedFile, "CancellationToken is a BCL type — ResolvedFile must be null");
+        Assert.IsTrue(
+            result.Unresolved.Contains("CancellationToken", StringComparer.Ordinal),
+            $"Expected 'CancellationToken' in Unresolved (BCL type). Got: [{string.Join(", ", result.Unresolved)}]");
     }
 }

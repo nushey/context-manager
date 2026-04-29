@@ -17,7 +17,7 @@ public sealed class InspectContextTool
         _analyzer = analyzer;
     }
 
-    [McpServerTool(Name = "inspect_context"), Description("Analyze cross-file relationships in up to 15 C# source files using Roslyn semantic model.")]
+    [McpServerTool(Name = "inspect_context"), Description("Analyze cross-file relationships in up to 15 C# source files using Roslyn semantic model. Types not declared in the input set — including BCL/framework types such as CancellationToken and Task — appear in 'unresolved' because no external assembly metadata is loaded.")]
     public async Task<string> InspectContextAsync(
         [Description("List of absolute paths to .cs files to analyze (max 15).")] IReadOnlyList<string> filePaths,
         CancellationToken ct = default)

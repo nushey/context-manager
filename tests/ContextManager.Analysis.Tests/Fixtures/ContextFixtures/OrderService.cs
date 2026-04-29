@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 
 namespace ContextFixtures;
 
-public class OrderService : IOrderService
+public class OrderService : BaseOrderService, IOrderService
 {
     public OrderService(IOrderRepository repository)
     {
@@ -12,5 +12,5 @@ public class OrderService : IOrderService
 
     private readonly IOrderRepository _repository;
 
-    public Task<Order> GetOrderAsync(int id, CancellationToken ct) => throw new System.NotImplementedException();
+    public override Task<Order> GetOrderAsync(int id, CancellationToken ct) => throw new System.NotImplementedException();
 }

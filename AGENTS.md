@@ -15,6 +15,8 @@ Context Manager is a C# / .NET 8 MCP (Model Context Protocol) server that uses R
 | Module | Purpose |
 |--------|---------|
 | `.claude/` | Claude Code project settings and hook configuration |
+| `.gemini/` | Gemini AI assistant configuration |
+| `nupkgs/` | Local NuGet package output directory |
 | `src/ContextManager.Mcp/` | MCP server console app — entry point, tool registration, stdio host wiring |
 | `src/ContextManager.Analysis/` | Roslyn analysis class library — file parsing, type extraction, JSON serialization |
 | `tests/ContextManager.Analysis.Tests/` | MSTest project covering analysis and extraction; includes real `.cs` fixture files parsed at runtime |
@@ -24,14 +26,17 @@ Context Manager is a C# / .NET 8 MCP (Model Context Protocol) server that uses R
 
 The system follows a two-layer architecture: an **MCP layer** (`ContextManager.Mcp`) that handles protocol concerns, and an **Analysis layer** (`ContextManager.Analysis`) that owns all Roslyn work.
 
-Data flows as follows: an MCP client calls a tool → `InspectFileTool` (decorated with `McpServerToolType`) receives the request → delegates to `FileAnalyzer`, which orchestrates the parse pipeline → `TypeExtractor` (extends `CSharpSyntaxWalker`) walks the syntax tree and dispatches to `MemberExtractor`, `AttributeExtractor`, `AccessLevel`, and `DtoDetector` → results are serialized through `AnalysisJson` and returned as JSON.
+**Single-file flow** (`inspect_file`): an MCP client calls a tool → `InspectFileTool` (decorated with `McpServerToolType`) receives the request → delegates to `FileAnalyzer`, which orchestrates the parse pipeline → `TypeExtractor` (extends `CSharpSyntaxWalker`) walks the syntax tree and dispatches to `MemberExtractor`, `AttributeExtractor`, `AccessLevel`, and `DtoDetector` → results are serialized through `AnalysisJson` and returned as JSON.
+
+**Multi-file flow** (`inspect_context`): `InspectContextTool` (decorated with `McpServerToolType`) validates input (≤15 files, all paths must exist) → delegates to `ContextAnalyzer`, which reads each file, builds a `CSharpCompilation` from source texts, and reuses `TypeExtractor` for AST walking → `CrossReferenceResolver` uses the `SemanticModel` to resolve constructor dependencies, interface implementations, base types, and method parameter types to their declaring files within the set → compressed results (methods as one-line strings via `MethodSignatureFormatter`, no properties) are serialized and returned as JSON.
 
 **Architectural anchors:**
 - `TypeExtractor` — the only `CSharpSyntaxWalker` subclass; owns tree traversal. All new type-visit logic goes here.
-- `FileAnalyzer` — orchestration entry point; coordinates extractors and owns error handling.
-- `InspectFileTool` — the MCP boundary; the only class with `McpServerToolType`. New MCP-exposed operations follow its pattern.
-
-The analyzer is intentionally **stateless**: no compilation, no cross-file symbol resolution. A `CSharpCompilation` + `SemanticModel` is reserved for a future `inspect_context` tool.
+- `FileAnalyzer` — single-file orchestration entry point; coordinates extractors and owns error handling.
+- `ContextAnalyzer` — multi-file orchestration entry point; builds `CSharpCompilation`, drives `CrossReferenceResolver`, returns `ContextAnalysis`.
+- `CrossReferenceResolver` — resolves structural references using the `SemanticModel`; classifies each reference as in-set (resolved to a file in the input) or unresolved.
+- `InspectFileTool` — MCP boundary for `inspect_file`; decorated with `McpServerToolType`.
+- `InspectContextTool` — MCP boundary for `inspect_context`; decorated with `McpServerToolType`. Owns input validation (file count limit, missing-file check).
 
 ## Backend Guidelines
 
