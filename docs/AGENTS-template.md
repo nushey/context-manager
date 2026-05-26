@@ -14,3 +14,19 @@
 - **Check `unresolved`** — types listed there are dependencies not in your file set. Add their files and call again.
 - **Do not call these tools for non-`.cs` files** — they will fail.
 - **Do not use these tools as a substitute for reading method bodies.** Use `read_file` with line numbers from the output when you need logic.
+
+### Knowledge Graph (if `project_scan` has been run)
+
+Use graph tools to navigate before you read. The starting point is always the file the user mentions.
+
+| Step | Tool | Purpose |
+|------|------|---------|
+| 1 | `inspect_file(path)` | Read the type → note namespace and type name |
+| 2 | `graph_get_dependencies(namespace.TypeName)` | Discover adjacent files worth reading |
+| 3 | `inspect_file` on relevant neighbors | Read only what you actually need |
+| 4 | `graph_impact_analysis(namespace.TypeName)` | Assess blast radius before changing anything |
+
+**`graph_impact_analysis` is a risk calibration tool — not a verification checklist.**
+- Few results → change is contained, proceed normally.
+- Many results → this type's public contract is load-bearing. Preserve it.
+- Do NOT inspect every node in the result. Use the count and direct callers to decide how conservative to be.
