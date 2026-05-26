@@ -36,6 +36,19 @@ public sealed class ProjectScanTool
 
         try
         {
+            MsBuildBootstrap.EnsureRegistered();
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(
+                new AnalysisError("msbuild_not_found",
+                    $"MSBuild could not be located on this machine. Install Visual Studio or the Build Tools (.NET desktop build tools workload). Underlying error: {ex.Message}",
+                    null),
+                AnalysisJson.Options);
+        }
+
+        try
+        {
             await _builder.BuildAsync(solutionPath, ct);
 
             var outputDir = Path.Combine(Path.GetDirectoryName(solutionPath)!, ".context-manager");

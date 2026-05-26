@@ -275,6 +275,165 @@ public class GraphStoreTests
         Assert.AreEqual(0, path.Count);
     }
 
+    // ── Cycles: BfsBackward + ShortestPath ──────────────────────────────────
+    // Regression tests for "infinite loop" reports on cyclic graphs.
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void BfsBackward_SelfLoop_DoesNotLoop()
+    {
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        store.AddNode(a);
+        store.AddEdge(new GraphEdge(a, a, "CALLS"));
+
+        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
+
+        Assert.AreEqual(0, result.Count, "Self-loop must not include A in its own backward set.");
+    }
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void BfsBackward_TwoNodeCycle_TerminatesAndReturnsOtherNode()
+    {
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        var b = new GraphNode("B", "Class");
+        store.AddNode(a);
+        store.AddNode(b);
+        store.AddEdge(new GraphEdge(a, b, "CALLS"));
+        store.AddEdge(new GraphEdge(b, a, "CALLS"));
+
+        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
+
+        CollectionAssert.AreEqual(new[] { "B" }, result.ToList());
+    }
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void BfsBackward_ThreeNodeCycle_VisitsEachOnce()
+    {
+        // A -> B -> C -> A
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        var b = new GraphNode("B", "Class");
+        var c = new GraphNode("C", "Class");
+        store.AddNode(a);
+        store.AddNode(b);
+        store.AddNode(c);
+        store.AddEdge(new GraphEdge(a, b, "CALLS"));
+        store.AddEdge(new GraphEdge(b, c, "CALLS"));
+        store.AddEdge(new GraphEdge(c, a, "CALLS"));
+
+        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" }).Order().ToList();
+
+        CollectionAssert.AreEqual(new[] { "B", "C" }, result);
+    }
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void ShortestPath_SelfLoop_FindsTrivialPath()
+    {
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        store.AddNode(a);
+        store.AddEdge(new GraphEdge(a, a, "CALLS"));
+
+        var path = store.ShortestPath("A", "A");
+
+        CollectionAssert.AreEqual(new[] { "A" }, path.ToList());
+    }
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void ShortestPath_CycleAlongTheWay_TerminatesAndReturnsCorrectPath()
+    {
+        // A -> B -> C, and B -> A creating a cycle.
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        var b = new GraphNode("B", "Class");
+        var c = new GraphNode("C", "Class");
+        store.AddNode(a);
+        store.AddNode(b);
+        store.AddNode(c);
+        store.AddEdge(new GraphEdge(a, b, "CALLS"));
+        store.AddEdge(new GraphEdge(b, c, "CALLS"));
+        store.AddEdge(new GraphEdge(b, a, "CALLS"));
+
+        var path = store.ShortestPath("A", "C");
+
+        CollectionAssert.AreEqual(new[] { "A", "B", "C" }, path.ToList());
+    }
+
+    // ── Scale + duplicate-instance edges (regression hypotheses for "infinite loop") ──
+
+    [TestMethod]
+    [Timeout(15_000)]
+    public void BfsBackward_LargeCyclicGraph_TerminatesQuickly()
+    {
+        // 5000 nodes in a giant SCC: each node points to the next + cross-edges back.
+        var store = new GraphStore();
+        const int n = 5000;
+        for (var i = 0; i < n; i++)
+            store.AddNode(new GraphNode($"N{i}", "Class"));
+
+        for (var i = 0; i < n; i++)
+        {
+            var src = new GraphNode($"N{i}", "Class");
+            var nextId = (i + 1) % n;
+            var crossId = (i + 7) % n; // cross-edge to introduce many cycles
+            store.AddEdge(new GraphEdge(src, new GraphNode($"N{nextId}", "Class"), "CALLS"));
+            store.AddEdge(new GraphEdge(src, new GraphNode($"N{crossId}", "Class"), "CALLS"));
+        }
+
+        var result = store.BfsBackward("N0", new HashSet<string> { "CALLS" });
+
+        // Whole graph is strongly connected → every other node reaches N0.
+        Assert.AreEqual(n - 1, result.Count, $"Expected {n - 1} ancestors, got {result.Count}");
+    }
+
+    [TestMethod]
+    [Timeout(15_000)]
+    public void ShortestPath_LargeCyclicGraph_TerminatesQuickly()
+    {
+        var store = new GraphStore();
+        const int n = 5000;
+        for (var i = 0; i < n; i++)
+            store.AddNode(new GraphNode($"N{i}", "Class"));
+
+        for (var i = 0; i < n; i++)
+        {
+            var src = new GraphNode($"N{i}", "Class");
+            store.AddEdge(new GraphEdge(src, new GraphNode($"N{(i + 1) % n}", "Class"), "CALLS"));
+            store.AddEdge(new GraphEdge(src, new GraphNode($"N{(i + 7) % n}", "Class"), "CALLS"));
+        }
+
+        var path = store.ShortestPath("N0", $"N{n - 1}");
+
+        Assert.IsTrue(path.Count > 0, "Expected non-empty path.");
+        Assert.AreEqual("N0", path[0]);
+        Assert.AreEqual($"N{n - 1}", path[^1]);
+    }
+
+    [TestMethod]
+    [Timeout(5_000)]
+    public void AddEdge_WithFreshNodeInstance_StillReachableViaInEdges()
+    {
+        // Reproduces EdgeExtractor's pattern: it creates `new GraphNode(...)` per edge
+        // instead of reusing the instance stored in _graph. This test guards that
+        // BidirectionalGraph treats them as equal via GraphNode.Equals(Id).
+        var store = new GraphStore();
+        store.AddNode(new GraphNode("A", "Class"));
+        store.AddNode(new GraphNode("B", "Class"));
+
+        // Note: brand-new instances, not the ones added above.
+        store.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
+
+        var result = store.BfsBackward("B", new HashSet<string> { "CALLS" });
+
+        CollectionAssert.AreEqual(new[] { "A" }, result.ToList());
+    }
+
     // ── Serialize / Deserialize ──────────────────────────────────────────────
 
     [TestMethod]
