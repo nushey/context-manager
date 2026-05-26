@@ -111,9 +111,14 @@ graph_path_find        → hop sequence
 
 **Typical agent workflow:**
 
-1. `project_scan` once per session (or after significant code changes)
-2. `graph_get_dependencies` / `graph_impact_analysis` / `graph_path_find` to find relevant nodes
-3. Take the `file` path from each result node and call `inspect_file` only on what matters
+The starting point is always a file the user mentions. From there:
+
+1. `inspect_file(path)` → read the type → construct node ID as `namespace.TypeName`
+2. `graph_get_dependencies(nodeId)` → discover which adjacent files to read for context
+3. `inspect_file` on the neighbors that are relevant — only those, nothing else
+4. `graph_impact_analysis(nodeId)` → assess the blast radius before making changes
+
+**Important:** `graph_impact_analysis` is a risk calibration tool, not a verification checklist. A large result (50+ nodes) means the type's public contract must be preserved — not that the agent should inspect all 50 files. The agent uses the count and the direct callers to decide how conservative to be.
 
 ### Step 1 — Scan the solution
 
@@ -137,7 +142,7 @@ The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in mem
 ]
 ```
 
-**`graph_impact_analysis`** — what breaks if I change this node?
+**`graph_impact_analysis`** — how critical is this node? What is the blast radius of a change?
 
 ```json
 // graph_impact_analysis("MyApp.Orders.IOrderRepository")
@@ -147,6 +152,8 @@ The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in mem
   "MyApp.Workers.OrderSyncWorker"
 ]
 ```
+
+A short list means the change is contained. A long list means the node's public contract is load-bearing — preserve it. The agent reads only the direct callers from `graph_get_dependencies`, not every node in this list.
 
 **`graph_path_find`** — how does the request reach the database?
 
@@ -162,7 +169,11 @@ The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in mem
 
 ### Step 3 — Inspect only what matters
 
-Use the node IDs from graph results to call `inspect_file` on the files you actually need. The graph tells you where to look; the inspection tools tell you what's there.
+Use the `file` paths from `graph_get_dependencies` results to call `inspect_file` on the files you actually need to understand. The graph tells you where to look; the inspection tools tell you what's there.
+
+### Configuring your agent
+
+Copy [`docs/AGENTS-template.md`](docs/AGENTS-template.md) into the `AGENTS.md` of any project that uses context-manager. It contains the mandatory rules for both inspection and graph tools.
 
 ### Pre-loading the graph at startup
 
