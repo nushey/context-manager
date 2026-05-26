@@ -30,3 +30,5 @@ Use graph tools to navigate before you read. The starting point is always the fi
 - Few results → change is contained, proceed normally.
 - Many results → this type's public contract is load-bearing. Preserve it.
 - Do NOT inspect every node in the result. Use the count and direct callers to decide how conservative to be.
+
+**`graph_path_find(sourceId, targetId)`** is available for investigation: use it when you need to understand why two nodes are connected or trace the dependency chain between two specific types.
