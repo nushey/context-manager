@@ -42,7 +42,7 @@ Reading a 1 500-line C# file costs an agent thousands of tokens on every call. C
 
 ### Prerequisites
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) or later — verify with `dotnet --version`
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10) or later — verify with `dotnet --version`
 
 That's it for `inspect_file` and `inspect_context`. No Python, no Node, no Docker.
 
