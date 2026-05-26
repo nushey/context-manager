@@ -1,11 +1,12 @@
 # ContextManager MCP
 
-An MCP (Model Context Protocol) server that extracts structural contracts from C# source files using Roslyn. Instead of sending thousands of tokens of raw source code to an AI agent, you give it a compact JSON summary: types, methods, signatures, dependencies, line numbers — everything an agent needs to understand a file without reading it.
+An MCP (Model Context Protocol) server that extracts structural contracts from C# source files using Roslyn — and builds a knowledge graph of the whole solution so agents navigate before they read.
 
 ## Why
 
-Reading a 1 500-line C# file costs an agent thousands of tokens on every call. ContextManager turns that file into a focused JSON contract (tens of tokens) that tells the agent:
+Reading a 1 500-line C# file costs an agent thousands of tokens on every call. ContextManager solves this at two levels:
 
+**Inspection** — turn a file into a compact JSON contract (tens of tokens) that tells the agent:
 - What types exist and their kind (`class`, `record`, `interface`, `enum`, `dto`)
 - The full public API surface — methods with return types, parameters, and decorators
 - Exact `startLine`/`endLine` for each method, so the agent can read only the body it needs
@@ -14,12 +15,28 @@ Reading a 1 500-line C# file costs an agent thousands of tokens on every call. C
 - All `using` directives (the import map)
 - `partial` class detection, `required` property flags, and generic method constraints
 
+**Navigation** — build a Directed Property Graph of the entire solution so the agent knows *which* files to inspect before reading anything:
+- Scan once, query forever
+- Ask "who depends on `OrderService`?" or "what breaks if I change `IOrderRepository`?"
+- Follow topological paths from controller to database without opening a single file
+
 ## Tools
+
+### Inspection
 
 | Tool | Description |
 |------|-------------|
 | `inspect_file` | Returns a structural JSON contract for a single `.cs` file |
 | `inspect_context` | Analyzes cross-file relationships in up to 15 `.cs` files using the Roslyn semantic model |
+
+### Knowledge Graph
+
+| Tool | Description |
+|------|-------------|
+| `project_scan` | Scans a `.sln`, builds the knowledge graph from all C# source files, and persists it to `<solution-root>/.context-manager/graph.json` |
+| `graph_get_dependencies` | Returns immediate neighbors of a node (all incoming and outgoing edges) as compressed node contracts |
+| `graph_impact_analysis` | BFS backward from a node — returns every node that directly or transitively depends on it |
+| `graph_path_find` | Returns the directed shortest path between two nodes as an ordered list of node IDs |
 
 ## Installation
 
@@ -78,6 +95,116 @@ claude mcp add context-manager -- context-manager
 ```bash
 dotnet tool update -g ContextManager
 ```
+
+## Knowledge Graph
+
+The graph tools work as a two-layer navigation system:
+
+```
+Layer 1 — Navigate (graph tools)       Layer 2 — Inspect (file tools)
+─────────────────────────────────      ─────────────────────────────
+project_scan          → build map      inspect_file    → type signatures
+graph_get_dependencies → neighbors     inspect_context → cross-file refs
+graph_impact_analysis  → blast radius
+graph_path_find        → hop sequence
+```
+
+**Typical agent workflow:**
+
+1. `project_scan` once per session (or after significant code changes)
+2. `graph_get_dependencies` / `graph_impact_analysis` / `graph_path_find` to find relevant nodes
+3. Take the `file` path from each result node and call `inspect_file` only on what matters
+
+### Step 1 — Scan the solution
+
+```
+project_scan("/abs/path/to/MyApp.sln")
+→ "Scan complete. 340 nodes, 850 edges."
+```
+
+The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in memory for the session.
+
+### Step 2 — Query the graph
+
+**`graph_get_dependencies`** — who are the immediate neighbors of a node?
+
+```json
+// graph_get_dependencies("MyApp.Orders.OrderService")
+[
+  { "id": "MyApp.Api.OrdersController",          "kind": "Class" },
+  { "id": "MyApp.Orders.IOrderRepository",       "kind": "Interface" },
+  { "id": "MyApp.Orders.IEventBus",              "kind": "Interface" }
+]
+```
+
+**`graph_impact_analysis`** — what breaks if I change this node?
+
+```json
+// graph_impact_analysis("MyApp.Orders.IOrderRepository")
+[
+  "MyApp.Orders.OrderService",
+  "MyApp.Api.OrdersController",
+  "MyApp.Workers.OrderSyncWorker"
+]
+```
+
+**`graph_path_find`** — how does the request reach the database?
+
+```json
+// graph_path_find("MyApp.Api.OrdersController", "MyApp.Infrastructure.SqlOrderRepository")
+[
+  "MyApp.Api.OrdersController",
+  "MyApp.Orders.OrderService",
+  "MyApp.Orders.IOrderRepository",
+  "MyApp.Infrastructure.SqlOrderRepository"
+]
+```
+
+### Step 3 — Inspect only what matters
+
+Use the node IDs from graph results to call `inspect_file` on the files you actually need. The graph tells you where to look; the inspection tools tell you what's there.
+
+### Pre-loading the graph at startup
+
+If you scan often and want the graph available immediately without calling `project_scan` manually, pass the graph path at startup:
+
+**Claude Code (`.mcp.json`):**
+
+```json
+{
+  "mcpServers": {
+    "context-manager": {
+      "command": "context-manager",
+      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
+    }
+  }
+}
+```
+
+Or via environment variable:
+
+```json
+{
+  "mcpServers": {
+    "context-manager": {
+      "command": "context-manager",
+      "env": {
+        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
+      }
+    }
+  }
+}
+```
+
+### Node ID format
+
+Node IDs use Roslyn's `ISymbol.ToDisplayString()` format — the fully qualified type name. Examples:
+
+- `MyApp.Orders.OrderService`
+- `MyApp.Orders.IOrderRepository`
+- `MyApp.Orders.OrderService.GetOrderAsync(System.Guid)`
+
+Use the exact string returned by `graph_get_dependencies` or `graph_impact_analysis` as input to other graph tools.
 
 ## Output examples
 
