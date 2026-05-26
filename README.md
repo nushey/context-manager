@@ -44,7 +44,15 @@ Reading a 1 500-line C# file costs an agent thousands of tokens on every call. C
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8) or later — verify with `dotnet --version`
 
-That's it. No Python, no Node, no Docker.
+That's it for `inspect_file` and `inspect_context`. No Python, no Node, no Docker.
+
+**`project_scan` on .NET Framework 4.8 solutions (Windows only)**
+
+`project_scan` uses `MSBuildWorkspace` internally, which requires the MSBuild toolchain to evaluate project files. For solutions targeting `net48`, MSBuild needs the .NET Framework 4.8 targeting pack — which is only available through Visual Studio or the standalone Build Tools.
+
+Install [Visual Studio Build Tools 2022 or 2025](https://visualstudio.microsoft.com/downloads/) (free) with the **.NET desktop build tools** workload. This includes MSBuild and the Framework 4.8 reference assemblies. Both MSBuild 17.x (VS2022) and MSBuild 18.x (VS2025) are supported.
+
+`project_scan` is not supported on Linux for `net48` solutions. `inspect_file` and `inspect_context` work on any platform regardless of target framework.
 
 ### 1. Install the tool
 
