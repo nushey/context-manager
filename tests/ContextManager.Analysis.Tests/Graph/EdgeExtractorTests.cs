@@ -18,6 +18,8 @@ public class EdgeExtractorTests
 
     private static readonly string SimpleServicePath = FixturePath("SimpleService.cs");
     private static readonly string ISimpleServicePath = FixturePath("ISimpleService.cs");
+    private static readonly string PrimaryConstructorClassPath = FixturePath("PrimaryConstructorClass.cs");
+    private static readonly string GenericConstructorClassPath = FixturePath("GenericConstructorClass.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -104,6 +106,40 @@ public class EdgeExtractorTests
 
         Assert.AreEqual(0, inheritsEdges.Count,
             $"Expected no INHERITS edges (SimpleService only implements an interface). Found: [{string.Join(", ", inheritsEdges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    public void Extract_PrimaryConstructor_GeneratesInjectsEdge()
+    {
+        var (model, root) = ParseWithCompilation([PrimaryConstructorClassPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var injectsEdge = edges.FirstOrDefault(e =>
+            e.Type == "INJECTS" &&
+            e.Source.Id.Contains("MyServiceConsumer") &&
+            e.Target.Id.Contains("IMyService"));
+
+        Assert.IsNotNull(injectsEdge,
+            $"Expected INJECTS edge from MyServiceConsumer to IMyService. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    public void Extract_GenericPrimaryConstructor_GeneratesInjectsEdge()
+    {
+        var (model, root) = ParseWithCompilation([GenericConstructorClassPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var injectsEdge = edges.FirstOrDefault(e =>
+            e.Type == "INJECTS" &&
+            e.Source.Id.Contains("MyRepositoryConsumer") &&
+            e.Target.Id.Contains("IRepository"));
+
+        Assert.IsNotNull(injectsEdge,
+            $"Expected INJECTS edge from MyRepositoryConsumer to IRepository<MyEntity>. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
 
     [TestMethod]
