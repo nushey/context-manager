@@ -45,7 +45,25 @@ public class EdgeExtractor
                 }
             }
 
-            // INJECTS edges from constructor parameters
+            // INJECTS edges — primary constructor (C# 12): params live on typeDecl.ParameterList
+            if (typeDecl.ParameterList is not null)
+            {
+                foreach (var param in typeDecl.ParameterList.Parameters)
+                {
+                    if (param.Type is null) continue;
+                    var paramSymbol = model.GetTypeInfo(param.Type, ct).Type;
+                    if (paramSymbol is null || !IsSourceSymbol(paramSymbol))
+                        continue;
+
+                    var targetNode = NodeFor(paramSymbol);
+                    if (targetNode is null)
+                        continue;
+
+                    AddEdge(sourceNode, targetNode, "INJECTS", seen, edges);
+                }
+            }
+
+            // INJECTS edges — explicit constructor: params live in ConstructorDeclarationSyntax.Members
             var ctors = typeDecl.Members
                 .OfType<ConstructorDeclarationSyntax>()
                 .Where(c => !c.Modifiers.Any(m => m.ValueText == "static"))
@@ -131,7 +149,15 @@ public class EdgeExtractor
         // BCL and external types have no declaring syntax references.
         // Generated file filtering (obj/, bin/, .g.cs) is the caller's responsibility
         // (GraphBuilder filters documents before invoking EdgeExtractor).
-        return !symbol.DeclaringSyntaxReferences.IsEmpty;
+        if (!symbol.DeclaringSyntaxReferences.IsEmpty)
+            return true;
+
+        // Constructed generics (e.g. IRepository<Attraction>) have empty DeclaringSyntaxReferences —
+        // the declaration lives on the open generic (OriginalDefinition), not the instantiation.
+        if (symbol is INamedTypeSymbol { IsGenericType: true } named)
+            return !named.OriginalDefinition.DeclaringSyntaxReferences.IsEmpty;
+
+        return false;
     }
 
     private static void AddEdge(
