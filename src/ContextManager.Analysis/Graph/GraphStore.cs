@@ -97,6 +97,86 @@ public class GraphStore
     }
 
     /// <summary>
+    /// Impact-specific backward traversal: seeds the BFS with the start node, its members
+    /// (via outbound <c>CONTAINS</c> edges), and any interfaces it implements (via outbound
+    /// <c>IMPLEMENTS</c> edges) plus their members. Then follows inbound edges whose type is
+    /// in <paramref name="edgeTypes"/>. Member nodes reached during traversal are rolled up to
+    /// their declaring type via the member's inbound <c>CONTAINS</c> edge. Seed nodes are
+    /// excluded from the result. Returns type IDs in BFS first-visit order, deduplicated.
+    /// </summary>
+    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes)
+    {
+        if (!_nodeById.TryGetValue(nodeId, out var startNode))
+            return [];
+
+        // Build seed: start node + its members + implemented interfaces + their members.
+        var seeds = new List<GraphNode> { startNode };
+        seeds.AddRange(GetContainedMembers(startNode));
+
+        foreach (var iface in GetImplementedInterfaces(startNode))
+        {
+            seeds.Add(iface);
+            seeds.AddRange(GetContainedMembers(iface));
+        }
+
+        var seedIds = new HashSet<string>(seeds.Select(n => n.Id), StringComparer.Ordinal);
+        var visited = new HashSet<GraphNode>(seeds);
+        var queue = new Queue<GraphNode>(seeds);
+        var reportedTypes = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+
+            foreach (var edge in _graph.InEdges(current))
+            {
+                if (!edgeTypes.Contains(edge.Type))
+                    continue;
+
+                var caller = edge.Source;
+
+                if (!visited.Add(caller))
+                    continue;
+
+                queue.Enqueue(caller);
+
+                // Roll up members to their declaring type.
+                var reportId = IsMemberNode(caller)
+                    ? GetDeclaringType(caller)?.Id ?? caller.Id
+                    : caller.Id;
+
+                if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
+                    result.Add(reportId);
+            }
+        }
+
+        return result;
+    }
+
+    // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
+    private IEnumerable<GraphNode> GetContainedMembers(GraphNode typeNode) =>
+        _graph.OutEdges(typeNode)
+              .Where(e => e.Type == "CONTAINS")
+              .Select(e => e.Target);
+
+    // Returns all nodes connected via outbound IMPLEMENTS edges.
+    private IEnumerable<GraphNode> GetImplementedInterfaces(GraphNode typeNode) =>
+        _graph.OutEdges(typeNode)
+              .Where(e => e.Type == "IMPLEMENTS")
+              .Select(e => e.Target);
+
+    // A node is a member if it has at least one inbound CONTAINS edge.
+    private bool IsMemberNode(GraphNode node) =>
+        _graph.InEdges(node).Any(e => e.Type == "CONTAINS");
+
+    // Returns the declaring type of a member node via its inbound CONTAINS edge.
+    private GraphNode? GetDeclaringType(GraphNode memberNode) =>
+        _graph.InEdges(memberNode)
+              .FirstOrDefault(e => e.Type == "CONTAINS")
+              ?.Source;
+
+    /// <summary>
     /// Returns the ordered node IDs forming the directed shortest path from source to target
     /// (inclusive of both endpoints). Returns empty if no path exists.
     /// </summary>
