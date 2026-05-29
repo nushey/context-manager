@@ -111,6 +111,45 @@ public class EdgeExtractor
                 }
             }
 
+            // REFERENCES edges — user-defined types in member signatures (not method bodies)
+            foreach (var memberDecl in typeDecl.Members)
+            {
+                switch (memberDecl)
+                {
+                    case MethodDeclarationSyntax methodDecl:
+                    {
+                        // Return type
+                        EmitReferencesForType(
+                            model.GetTypeInfo(methodDecl.ReturnType, ct).Type,
+                            sourceNode, seen, edges);
+
+                        // Parameter types
+                        foreach (var param in methodDecl.ParameterList.Parameters)
+                        {
+                            if (param.Type is null) continue;
+                            EmitReferencesForType(
+                                model.GetTypeInfo(param.Type, ct).Type,
+                                sourceNode, seen, edges);
+                        }
+                        break;
+                    }
+                    case PropertyDeclarationSyntax propertyDecl:
+                    {
+                        EmitReferencesForType(
+                            model.GetTypeInfo(propertyDecl.Type, ct).Type,
+                            sourceNode, seen, edges);
+                        break;
+                    }
+                    case FieldDeclarationSyntax fieldDecl:
+                    {
+                        EmitReferencesForType(
+                            model.GetTypeInfo(fieldDecl.Declaration.Type, ct).Type,
+                            sourceNode, seen, edges);
+                        break;
+                    }
+                }
+            }
+
             // CALLS and RETURNS edges from methods
             foreach (var methodDecl in typeDecl.Members.OfType<MethodDeclarationSyntax>())
             {
@@ -196,5 +235,41 @@ public class EdgeExtractor
             return;
 
         edges.Add(new GraphEdge(source, target, type));
+    }
+
+    // Emits REFERENCES edge(s) from sourceNode for the given type symbol (if user-defined).
+    // For constructed generics (e.g. IRepository<Attraction>), emits REFERENCES to the open
+    // generic definition (OriginalDefinition) and to each user-defined type argument — not
+    // to the constructed form itself, which has no standalone node in the graph.
+    private static void EmitReferencesForType(
+        ITypeSymbol? typeSymbol,
+        GraphNode sourceNode,
+        HashSet<(string, string, string)> seen,
+        List<GraphEdge> edges)
+    {
+        if (typeSymbol is null)
+            return;
+
+        if (typeSymbol is INamedTypeSymbol { IsGenericType: true } named
+            && !named.OriginalDefinition.Equals(named, SymbolEqualityComparer.Default))
+        {
+            // Constructed generic: target the open generic definition and each type arg.
+            var openDef = named.OriginalDefinition;
+            if (IsSourceSymbol(openDef))
+            {
+                var defNode = NodeFor(openDef);
+                if (defNode is not null)
+                    AddEdge(sourceNode, defNode, "REFERENCES", seen, edges);
+            }
+
+            foreach (var typeArg in named.TypeArguments)
+                EmitReferencesForType(typeArg, sourceNode, seen, edges);
+        }
+        else if (IsSourceSymbol(typeSymbol))
+        {
+            var targetNode = NodeFor(typeSymbol);
+            if (targetNode is not null)
+                AddEdge(sourceNode, targetNode, "REFERENCES", seen, edges);
+        }
     }
 }
