@@ -20,6 +20,7 @@ public class EdgeExtractorTests
     private static readonly string ISimpleServicePath = FixturePath("ISimpleService.cs");
     private static readonly string PrimaryConstructorClassPath = FixturePath("PrimaryConstructorClass.cs");
     private static readonly string GenericConstructorClassPath = FixturePath("GenericConstructorClass.cs");
+    private static readonly string TypeWithMembersPath = FixturePath("TypeWithMembers.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -140,6 +141,80 @@ public class EdgeExtractorTests
 
         Assert.IsNotNull(injectsEdge,
             $"Expected INJECTS edge from MyRepositoryConsumer to IRepository<MyEntity>. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    public void Extract_TypeWithMethod_EmitsContainsEdgeToMethod()
+    {
+        var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var containsEdge = edges.FirstOrDefault(e =>
+            e.Type == "CONTAINS" &&
+            e.Source.Id.Contains("TypeWithMembers") &&
+            e.Target.Kind == "Method");
+
+        Assert.IsNotNull(containsEdge,
+            $"Expected CONTAINS edge from TypeWithMembers to a Method node. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        Assert.AreEqual("Class", containsEdge!.Source.Kind, "CONTAINS source kind should be Class");
+        Assert.AreEqual("Method", containsEdge.Target.Kind, "CONTAINS target kind should be Method");
+    }
+
+    [TestMethod]
+    public void Extract_TypeWithProperty_EmitsContainsEdgeToProperty()
+    {
+        var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var containsEdge = edges.FirstOrDefault(e =>
+            e.Type == "CONTAINS" &&
+            e.Source.Id.Contains("TypeWithMembers") &&
+            e.Target.Kind == "Property");
+
+        Assert.IsNotNull(containsEdge,
+            $"Expected CONTAINS edge from TypeWithMembers to a Property node. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        Assert.AreEqual("Class", containsEdge!.Source.Kind, "CONTAINS source kind should be Class");
+        Assert.AreEqual("Property", containsEdge.Target.Kind, "CONTAINS target kind should be Property");
+    }
+
+    [TestMethod]
+    public void Extract_TypeWithMembers_ContainsTargetIdMatchesGraphBuilderDisplayString()
+    {
+        var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var methodContainsEdge = edges.FirstOrDefault(e =>
+            e.Type == "CONTAINS" && e.Target.Kind == "Method");
+
+        Assert.IsNotNull(methodContainsEdge, "Expected at least one CONTAINS edge to a Method node");
+        // The ID must match IMethodSymbol.ToDisplayString() — same form GraphBuilder uses for method nodes.
+        Assert.IsTrue(
+            methodContainsEdge!.Target.Id.Contains("GetGreeting"),
+            $"Expected method node ID to contain 'GetGreeting' (ToDisplayString form). Got: {methodContainsEdge.Target.Id}");
+    }
+
+    [TestMethod]
+    public void Extract_TypeWithMembers_NoDuplicateContainsEdges()
+    {
+        var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var containsEdges = edges.Where(e => e.Type == "CONTAINS").ToList();
+        var distinct = containsEdges
+            .Select(e => (e.Source.Id, e.Target.Id, e.Type))
+            .Distinct()
+            .ToList();
+
+        Assert.AreEqual(distinct.Count, containsEdges.Count,
+            $"Duplicate CONTAINS edges detected. All CONTAINS edges: [{string.Join(", ", containsEdges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
 
     [TestMethod]

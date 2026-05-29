@@ -87,6 +87,30 @@ public class EdgeExtractor
                 }
             }
 
+            // CONTAINS edges — type → each declared method and property
+            foreach (var memberDecl in typeDecl.Members)
+            {
+                switch (memberDecl)
+                {
+                    case MethodDeclarationSyntax methodDecl:
+                    {
+                        var memberSymbol = model.GetDeclaredSymbol(methodDecl, ct) as IMethodSymbol;
+                        if (memberSymbol is null) continue;
+                        var memberNode = new GraphNode(memberSymbol.ToDisplayString(), "Method");
+                        AddEdge(sourceNode, memberNode, "CONTAINS", seen, edges);
+                        break;
+                    }
+                    case PropertyDeclarationSyntax propertyDecl:
+                    {
+                        var memberSymbol = model.GetDeclaredSymbol(propertyDecl, ct) as IPropertySymbol;
+                        if (memberSymbol is null) continue;
+                        var memberNode = new GraphNode(memberSymbol.ToDisplayString(), "Property");
+                        AddEdge(sourceNode, memberNode, "CONTAINS", seen, edges);
+                        break;
+                    }
+                }
+            }
+
             // CALLS and RETURNS edges from methods
             foreach (var methodDecl in typeDecl.Members.OfType<MethodDeclarationSyntax>())
             {
