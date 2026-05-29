@@ -154,6 +154,22 @@ public class GraphStore
         return result;
     }
 
+    /// <summary>
+    /// Returns the IDs of interface nodes that <paramref name="nodeId"/> implements
+    /// (outbound <c>IMPLEMENTS</c> edges). Returns empty if the node is unknown or
+    /// has no outbound IMPLEMENTS edges.
+    /// </summary>
+    public IReadOnlyList<string> GetImplementedInterfaceIds(string nodeId)
+    {
+        if (!_nodeById.TryGetValue(nodeId, out var node))
+            return [];
+
+        return _graph.OutEdges(node)
+                     .Where(e => e.Type == "IMPLEMENTS")
+                     .Select(e => e.Target.Id)
+                     .ToList();
+    }
+
     // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
     private IEnumerable<GraphNode> GetContainedMembers(GraphNode typeNode) =>
         _graph.OutEdges(typeNode)
@@ -175,6 +191,32 @@ public class GraphStore
         _graph.InEdges(memberNode)
               .FirstOrDefault(e => e.Type == "CONTAINS")
               ?.Source;
+
+    /// <summary>
+    /// Given a set of interface node IDs, returns those IDs for which no inbound
+    /// <c>IMPLEMENTS</c> edge exists in the graph — probable reflection/dynamic blind spots.
+    /// Only IDs that actually exist in the graph and whose node kind is <c>Interface</c>
+    /// are checked; unknown or non-interface IDs are silently skipped.
+    /// </summary>
+    public IReadOnlyList<string> GetInterfacesWithNoImplementations(IEnumerable<string> interfaceIds)
+    {
+        var result = new List<string>();
+
+        foreach (var id in interfaceIds)
+        {
+            if (!_nodeById.TryGetValue(id, out var node))
+                continue;
+
+            if (node.Kind != "Interface")
+                continue;
+
+            var hasImplementation = _graph.InEdges(node).Any(e => e.Type == "IMPLEMENTS");
+            if (!hasImplementation)
+                result.Add(id);
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Returns the ordered node IDs forming the directed shortest path from source to target

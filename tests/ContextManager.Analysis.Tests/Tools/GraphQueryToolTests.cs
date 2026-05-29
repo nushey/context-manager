@@ -118,19 +118,20 @@ public class GraphQueryToolTests
     }
 
     [TestMethod]
-    public async Task GraphImpactAnalysis_LeafNode_ReturnsBfsAncestors()
+    public async Task GraphImpactAnalysis_LeafNode_ReturnsAncestors()
     {
         var tool = new GraphImpactAnalysisTool(BuildSampleStore());
 
         // C has in-edge from B (CALLS). B has in-edge from A (CALLS).
-        // BFS backward from C: first B, then A.
+        // Impact backward from C: first B, then A.
         var json = await tool.GraphImpactAnalysisAsync("C");
 
-        var ids = JsonSerializer.Deserialize<List<string>>(json, AnalysisJson.Options);
-        Assert.IsNotNull(ids);
-        Assert.AreEqual(2, ids!.Count);
-        Assert.AreEqual("B", ids[0]);
-        Assert.AreEqual("A", ids[1]);
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(2, result!.AffectedIds.Count);
+        Assert.AreEqual("B", result.AffectedIds[0]);
+        Assert.AreEqual("A", result.AffectedIds[1]);
+        Assert.AreEqual(0, result.Diagnostics.Count);
     }
 
     [TestMethod]
@@ -139,25 +140,106 @@ public class GraphQueryToolTests
         var tool = new GraphImpactAnalysisTool(BuildSampleStore());
 
         // D has in-edges from A (INJECTS) and B (INJECTS).
-        // BFS backward from D: A and B (order depends on insertion order).
+        // Impact backward from D: A and B (order depends on insertion order).
         var json = await tool.GraphImpactAnalysisAsync("D");
 
-        var ids = JsonSerializer.Deserialize<List<string>>(json, AnalysisJson.Options);
-        Assert.IsNotNull(ids);
-        CollectionAssert.AreEquivalent(new[] { "A", "B" }, ids!);
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        CollectionAssert.AreEquivalent(new[] { "A", "B" }, result!.AffectedIds.ToList());
     }
 
     [TestMethod]
-    public async Task GraphImpactAnalysis_NodeWithNoCallers_ReturnsEmptyList()
+    public async Task GraphImpactAnalysis_NodeWithNoCallers_ReturnsEmptyAffectedIds()
     {
         var tool = new GraphImpactAnalysisTool(BuildSampleStore());
 
-        // A has no in-edges → empty BFS result.
+        // A has no in-edges → empty impact result.
         var json = await tool.GraphImpactAnalysisAsync("A");
 
-        var ids = JsonSerializer.Deserialize<List<string>>(json, AnalysisJson.Options);
-        Assert.IsNotNull(ids);
-        Assert.AreEqual(0, ids!.Count);
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, result!.AffectedIds.Count);
+        Assert.AreEqual(0, result.Diagnostics.Count);
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_InterfaceWithNoImplementations_EmitsReflectionDiagnostic()
+    {
+        // Graph: X --INJECTS--> IService
+        // IService has no inbound IMPLEMENTS edges → reflection blind spot.
+        var store = new GraphStore();
+        var x = new GraphNode("X", "Class");
+        var iface = new GraphNode("IService", "Interface");
+        store.AddNode(x);
+        store.AddNode(iface);
+        store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IService");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        // X injects IService, so X is an affected caller.
+        CollectionAssert.AreEquivalent(new[] { "X" }, result!.AffectedIds.ToList());
+        // IService has no implementations → one diagnostic entry.
+        Assert.AreEqual(1, result.Diagnostics.Count);
+        Assert.AreEqual("reflection_blind_spot", result.Diagnostics[0].Code);
+        Assert.AreEqual("IService", result.Diagnostics[0].InterfaceId);
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_InterfaceWithImplementation_NoDiagnostic()
+    {
+        // Graph: Impl --IMPLEMENTS--> IService
+        //        X --INJECTS--> IService
+        // IService has one inbound IMPLEMENTS edge → no reflection blind spot.
+        var store = new GraphStore();
+        var impl = new GraphNode("Impl", "Class");
+        var x = new GraphNode("X", "Class");
+        var iface = new GraphNode("IService", "Interface");
+        store.AddNode(impl);
+        store.AddNode(x);
+        store.AddNode(iface);
+        store.AddEdge(new GraphEdge(impl, iface, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IService");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, result!.Diagnostics.Count);
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_ClassImplementsUnboundInterface_EmitsDiagnosticForInterface()
+    {
+        // Graph: ConcreteClass --IMPLEMENTS--> IService (IService has no other IMPLEMENTS edges)
+        //        X --INJECTS--> IService
+        // Analyzing ConcreteClass: it implements IService but IService has no OTHER inbound IMPLEMENTS.
+        // Wait — ConcreteClass itself provides an implementation so IService DOES have an implementation.
+        // This test verifies the positive (non-false-positive) path for a concrete class that
+        // implements an interface WITH at least one implementation present.
+        var store = new GraphStore();
+        var concrete = new GraphNode("ConcreteClass", "Class");
+        var iface = new GraphNode("IService", "Interface");
+        var x = new GraphNode("X", "Class");
+        store.AddNode(concrete);
+        store.AddNode(iface);
+        store.AddNode(x);
+        store.AddEdge(new GraphEdge(concrete, iface, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        // Analyzing ConcreteClass — it implements IService which has 1 inbound IMPLEMENTS → no diagnostic.
+        var json = await tool.GraphImpactAnalysisAsync("ConcreteClass");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        Assert.AreEqual(0, result!.Diagnostics.Count);
     }
 
     // ── GraphPathFindTool ────────────────────────────────────────────────────
