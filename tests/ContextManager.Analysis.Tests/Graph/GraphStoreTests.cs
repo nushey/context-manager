@@ -530,4 +530,279 @@ public class GraphStoreTests
 
         Assert.IsFalse(store.TryGetNode("A", out _));
     }
+
+    // ── ImpactBackward ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Member roll-up: CallerType.method --CALLS--> StartType.method.
+    /// BfsBackward returns [] (no type→type CALLS), ImpactBackward returns CallerType.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_MemberCallsMember_RollsUpToCallerType()
+    {
+        // StartType --CONTAINS--> StartType.method
+        // CallerType --CONTAINS--> CallerType.method
+        // CallerType.method --CALLS--> StartType.method
+        var store = new GraphStore();
+        var startType = new GraphNode("StartType", "Class");
+        var startMethod = new GraphNode("StartType.DoWork", "Method");
+        var callerType = new GraphNode("CallerType", "Class");
+        var callerMethod = new GraphNode("CallerType.Execute", "Method");
+
+        store.AddEdge(new GraphEdge(startType, startMethod, "CONTAINS"));
+        store.AddEdge(new GraphEdge(callerType, callerMethod, "CONTAINS"));
+        store.AddEdge(new GraphEdge(callerMethod, startMethod, "CALLS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+
+        var bfsResult = store.BfsBackward("StartType", edgeTypes);
+        Assert.AreEqual(0, bfsResult.Count, "BfsBackward must see no inbound edges on the type node");
+
+        var impactResult = store.ImpactBackward("StartType", edgeTypes);
+        CollectionAssert.AreEqual(new[] { "CallerType" }, impactResult.ToList());
+    }
+
+    /// <summary>
+    /// Static utility class scenario: Guard.Check is called by multiple types' methods.
+    /// ImpactBackward on Guard returns all calling types.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_StaticUtility_ReturnsAllCallerTypes()
+    {
+        // Guard --CONTAINS--> Guard.Check
+        // ServiceA --CONTAINS--> ServiceA.Validate
+        // ServiceB --CONTAINS--> ServiceB.Process
+        // ServiceA.Validate --CALLS--> Guard.Check
+        // ServiceB.Process --CALLS--> Guard.Check
+        var store = new GraphStore();
+        var guard = new GraphNode("Guard", "Class");
+        var guardCheck = new GraphNode("Guard.Check", "Method");
+        var serviceA = new GraphNode("ServiceA", "Class");
+        var serviceAValidate = new GraphNode("ServiceA.Validate", "Method");
+        var serviceB = new GraphNode("ServiceB", "Class");
+        var serviceBProcess = new GraphNode("ServiceB.Process", "Method");
+
+        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+        store.AddEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("Guard", edgeTypes).OrderBy(x => x).ToList();
+
+        CollectionAssert.AreEqual(new[] { "ServiceA", "ServiceB" }, result);
+    }
+
+    /// <summary>
+    /// Interface bridging: IRepository is injected into Controller.
+    /// ImpactBackward on ConcreteRepository (implements IRepository) returns Controller.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_ConcreteClass_ReachesInterfaceConsumers()
+    {
+        // ConcreteRepository --IMPLEMENTS--> IRepository
+        // Controller --INJECTS--> IRepository
+        var store = new GraphStore();
+        var concreteRepo = new GraphNode("ConcreteRepository", "Class");
+        var iRepo = new GraphNode("IRepository", "Interface");
+        var controller = new GraphNode("Controller", "Class");
+
+        store.AddEdge(new GraphEdge(concreteRepo, iRepo, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(controller, iRepo, "INJECTS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("ConcreteRepository", edgeTypes);
+
+        CollectionAssert.AreEqual(new[] { "Controller" }, result.ToList());
+    }
+
+    /// <summary>
+    /// Multi-interface bridging: a class implementing two interfaces reaches consumers of both.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_MultipleInterfaces_BridgesThroughAll()
+    {
+        // Service --IMPLEMENTS--> IFoo
+        // Service --IMPLEMENTS--> IBar
+        // ConsumerA --INJECTS--> IFoo
+        // ConsumerB --INJECTS--> IBar
+        var store = new GraphStore();
+        var service = new GraphNode("Service", "Class");
+        var iFoo = new GraphNode("IFoo", "Interface");
+        var iBar = new GraphNode("IBar", "Interface");
+        var consumerA = new GraphNode("ConsumerA", "Class");
+        var consumerB = new GraphNode("ConsumerB", "Class");
+
+        store.AddEdge(new GraphEdge(service, iFoo, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(service, iBar, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(consumerA, iFoo, "INJECTS"));
+        store.AddEdge(new GraphEdge(consumerB, iBar, "INJECTS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("Service", edgeTypes).OrderBy(x => x).ToList();
+
+        CollectionAssert.AreEqual(new[] { "ConsumerA", "ConsumerB" }, result);
+    }
+
+    /// <summary>
+    /// Transitive bridging: Controller injects IOuter; Outer implements IOuter.
+    /// ImpactBackward on Outer bridges through IOuter and returns Controller,
+    /// exercising the interface-bridging seed without a depth parameter.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_TransitiveChain_ControllerInjectsInterfaceImplementedByConcrete()
+    {
+        // Outer --IMPLEMENTS--> IOuter
+        // Controller --INJECTS--> IOuter
+        // ServiceB --INJECTS--> Outer   (direct, to verify non-interface path still works)
+        var store = new GraphStore();
+        var outer = new GraphNode("Outer", "Class");
+        var iOuter = new GraphNode("IOuter", "Interface");
+        var controller = new GraphNode("Controller", "Class");
+        var serviceB = new GraphNode("ServiceB", "Class");
+
+        store.AddEdge(new GraphEdge(outer, iOuter, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(controller, iOuter, "INJECTS"));
+        store.AddEdge(new GraphEdge(serviceB, outer, "INJECTS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("Outer", edgeTypes).OrderBy(x => x).ToList();
+
+        // Controller reaches Outer via interface bridge; ServiceB directly injects Outer.
+        CollectionAssert.AreEqual(new[] { "Controller", "ServiceB" }, result);
+        CollectionAssert.DoesNotContain(result, "IOuter");
+        CollectionAssert.DoesNotContain(result, "Outer");
+    }
+
+    /// <summary>
+    /// REFERENCES and RETURNS inbound edges are rolled up to the type level.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_ReferencesAndReturnsEdges_RolledUpToType()
+    {
+        // StartType
+        // UserType --CONTAINS--> UserType.Prop (REFERENCES StartType)
+        // ProviderType --CONTAINS--> ProviderType.Get (RETURNS StartType)
+        var store = new GraphStore();
+        var startType = new GraphNode("StartType", "Class");
+        var userType = new GraphNode("UserType", "Class");
+        var userProp = new GraphNode("UserType.Prop", "Property");
+        var providerType = new GraphNode("ProviderType", "Class");
+        var providerGet = new GraphNode("ProviderType.Get", "Method");
+
+        store.AddNode(startType);
+        store.AddEdge(new GraphEdge(userType, userProp, "CONTAINS"));
+        store.AddEdge(new GraphEdge(userProp, startType, "REFERENCES"));
+        store.AddEdge(new GraphEdge(providerType, providerGet, "CONTAINS"));
+        store.AddEdge(new GraphEdge(providerGet, startType, "RETURNS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("StartType", edgeTypes).OrderBy(x => x).ToList();
+
+        CollectionAssert.AreEqual(new[] { "ProviderType", "UserType" }, result);
+    }
+
+    /// <summary>
+    /// Seed nodes (start type, its members, bridged interfaces, their members) must not appear
+    /// in the result.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_SeedNodes_ExcludedFromResult()
+    {
+        // StartType --CONTAINS--> StartType.M
+        // StartType --IMPLEMENTS--> IFace
+        // IFace --CONTAINS--> IFace.Contract
+        // CallerType --CONTAINS--> CallerType.Use
+        // CallerType.Use --CALLS--> StartType.M
+        var store = new GraphStore();
+        var startType = new GraphNode("StartType", "Class");
+        var startM = new GraphNode("StartType.M", "Method");
+        var iFace = new GraphNode("IFace", "Interface");
+        var ifaceContract = new GraphNode("IFace.Contract", "Method");
+        var callerType = new GraphNode("CallerType", "Class");
+        var callerUse = new GraphNode("CallerType.Use", "Method");
+
+        store.AddEdge(new GraphEdge(startType, startM, "CONTAINS"));
+        store.AddEdge(new GraphEdge(startType, iFace, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(iFace, ifaceContract, "CONTAINS"));
+        store.AddEdge(new GraphEdge(callerType, callerUse, "CONTAINS"));
+        store.AddEdge(new GraphEdge(callerUse, startM, "CALLS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("StartType", edgeTypes);
+
+        CollectionAssert.DoesNotContain(result.ToList(), "StartType");
+        CollectionAssert.DoesNotContain(result.ToList(), "StartType.M");
+        CollectionAssert.DoesNotContain(result.ToList(), "IFace");
+        CollectionAssert.DoesNotContain(result.ToList(), "IFace.Contract");
+        CollectionAssert.AreEqual(new[] { "CallerType" }, result.ToList());
+    }
+
+    /// <summary>
+    /// Self-referential graph: a method that calls itself — must terminate.
+    /// </summary>
+    [TestMethod]
+    [Timeout(5_000)]
+    public void ImpactBackward_SelfReferential_Terminates()
+    {
+        // RecursiveType --CONTAINS--> RecursiveType.Recurse
+        // RecursiveType.Recurse --CALLS--> RecursiveType.Recurse (self-loop)
+        var store = new GraphStore();
+        var t = new GraphNode("RecursiveType", "Class");
+        var m = new GraphNode("RecursiveType.Recurse", "Method");
+
+        store.AddEdge(new GraphEdge(t, m, "CONTAINS"));
+        store.AddEdge(new GraphEdge(m, m, "CALLS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("RecursiveType", edgeTypes);
+
+        // The only caller of Recurse is itself (a seed member), so nothing reported.
+        Assert.AreEqual(0, result.Count);
+    }
+
+    /// <summary>
+    /// Cyclic type graph: A.m calls B.m, B.m calls A.m — must terminate and report each type once.
+    /// </summary>
+    [TestMethod]
+    [Timeout(5_000)]
+    public void ImpactBackward_CyclicTypes_TerminatesAndDeduplicates()
+    {
+        // TypeA --CONTAINS--> TypeA.M
+        // TypeB --CONTAINS--> TypeB.M
+        // TypeA.M --CALLS--> TypeB.M
+        // TypeB.M --CALLS--> TypeA.M
+        var store = new GraphStore();
+        var typeA = new GraphNode("TypeA", "Class");
+        var typeAM = new GraphNode("TypeA.M", "Method");
+        var typeB = new GraphNode("TypeB", "Class");
+        var typeBM = new GraphNode("TypeB.M", "Method");
+
+        store.AddEdge(new GraphEdge(typeA, typeAM, "CONTAINS"));
+        store.AddEdge(new GraphEdge(typeB, typeBM, "CONTAINS"));
+        store.AddEdge(new GraphEdge(typeAM, typeBM, "CALLS"));
+        store.AddEdge(new GraphEdge(typeBM, typeAM, "CALLS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("TypeA", edgeTypes);
+
+        // TypeB calls TypeA.M, so TypeB is impacted.
+        // TypeA.M is a seed, TypeA is start — neither reported.
+        // TypeB appears exactly once.
+        Assert.AreEqual(1, result.Count);
+        Assert.AreEqual("TypeB", result[0]);
+    }
+
+    /// <summary>
+    /// UnknownNode start returns empty without throwing.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_UnknownStartNode_ReturnsEmpty()
+    {
+        var store = BuildSampleGraph();
+        var result = store.ImpactBackward("NonExistent", new HashSet<string> { "CALLS" });
+
+        Assert.AreEqual(0, result.Count);
+    }
 }
