@@ -37,27 +37,31 @@ public sealed class GraphImpactAnalysisTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options));
 
-        var affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes);
-        var diagnostics = BuildReflectionDiagnostics(startNode!, nodeId);
+        var affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out var bridgedInterfaceIds);
+        var diagnostics = BuildReflectionDiagnostics(startNode!, nodeId, bridgedInterfaceIds);
         var result = new GraphImpactResult(affectedIds, diagnostics);
 
         return Task.FromResult(JsonSerializer.Serialize(result, AnalysisJson.Options));
     }
 
     // Collects the interface IDs relevant to this impact analysis: the start node itself
-    // (if it is an Interface) plus any interfaces it implements via IMPLEMENTS edges.
+    // (if it is an Interface) plus all interfaces bridged during the full traversal.
+    // Using the traversal-derived set (not just start node's direct interfaces) ensures
+    // transitive bridging is covered without a second graph walk.
     // Returns diagnostic entries for those with zero in-graph implementations.
-    private IReadOnlyList<GraphImpactDiagnostic> BuildReflectionDiagnostics(GraphNode startNode, string nodeId)
+    private IReadOnlyList<GraphImpactDiagnostic> BuildReflectionDiagnostics(
+        GraphNode startNode,
+        string nodeId,
+        IReadOnlyList<string> bridgedInterfaceIds)
     {
         var interfacesToCheck = new List<string>();
 
         if (startNode.Kind == "Interface")
             interfacesToCheck.Add(nodeId);
 
-        // Interfaces reached via IMPLEMENTS are also seeded into the BFS (interface bridging),
-        // so any consumer of those interfaces is included in the traversal — they must be
-        // checked for the reflection blind spot as well.
-        interfacesToCheck.AddRange(_store.GetImplementedInterfaceIds(nodeId));
+        // All interfaces bridged during the traversal (seed-time + mid-traversal) are included.
+        // This covers transitive bridging discovered mid-BFS, not just the start node's direct interfaces.
+        interfacesToCheck.AddRange(bridgedInterfaceIds);
 
         var blindSpots = _store.GetInterfacesWithNoImplementations(interfacesToCheck);
 

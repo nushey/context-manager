@@ -101,13 +101,26 @@ public class GraphStore
     /// (via outbound <c>CONTAINS</c> edges), and any interfaces it implements (via outbound
     /// <c>IMPLEMENTS</c> edges) plus their members. Then follows inbound edges whose type is
     /// in <paramref name="edgeTypes"/>. Member nodes reached during traversal are rolled up to
-    /// their declaring type via the member's inbound <c>CONTAINS</c> edge. Seed nodes are
-    /// excluded from the result. Returns type IDs in BFS first-visit order, deduplicated.
+    /// their declaring type via the member's inbound <c>CONTAINS</c> edge. Interface bridging
+    /// is applied continuously — whenever a concrete class is dequeued, its implemented interfaces
+    /// (and their members) are fed back into the traversal, guarded by the shared visited set.
+    /// Seed nodes and all bridged interfaces/members are excluded from the result.
+    /// Returns type IDs in BFS first-visit order, deduplicated.
+    /// <paramref name="bridgedInterfaceIds"/> receives all interface IDs bridged during the
+    /// traversal (including seed-time bridging) — used by diagnostics without a second graph walk.
     /// </summary>
-    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes)
+    public IReadOnlyList<string> ImpactBackward(
+        string nodeId,
+        IReadOnlySet<string> edgeTypes,
+        out IReadOnlyList<string> bridgedInterfaceIds)
     {
         if (!_nodeById.TryGetValue(nodeId, out var startNode))
+        {
+            bridgedInterfaceIds = [];
             return [];
+        }
+
+        var bridged = new List<string>();
 
         // Build seed: start node + its members + implemented interfaces + their members.
         var seeds = new List<GraphNode> { startNode };
@@ -117,6 +130,7 @@ public class GraphStore
         {
             seeds.Add(iface);
             seeds.AddRange(GetContainedMembers(iface));
+            bridged.Add(iface.Id);
         }
 
         var seedIds = new HashSet<string>(seeds.Select(n => n.Id), StringComparer.Ordinal);
@@ -128,6 +142,28 @@ public class GraphStore
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
+
+            // Apply interface bridging to every concrete class dequeued — not only the seed.
+            // Enqueue bridged interfaces and their members so inbound INJECTS on those interfaces
+            // are followed. The shared visited set guarantees cycle safety and dedup.
+            foreach (var iface in GetImplementedInterfaces(current))
+            {
+                if (!visited.Add(iface))
+                    continue;
+
+                queue.Enqueue(iface);
+                seedIds.Add(iface.Id);
+                bridged.Add(iface.Id);
+
+                foreach (var member in GetContainedMembers(iface))
+                {
+                    if (visited.Add(member))
+                    {
+                        queue.Enqueue(member);
+                        seedIds.Add(member.Id);
+                    }
+                }
+            }
 
             foreach (var edge in _graph.InEdges(current))
             {
@@ -151,8 +187,16 @@ public class GraphStore
             }
         }
 
+        bridgedInterfaceIds = bridged;
         return result;
     }
+
+    /// <summary>
+    /// Overload without the <c>bridgedInterfaceIds</c> out parameter — convenience for callers
+    /// that do not need diagnostic data.
+    /// </summary>
+    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes) =>
+        ImpactBackward(nodeId, edgeTypes, out _);
 
     /// <summary>
     /// Returns the IDs of interface nodes that <paramref name="nodeId"/> implements

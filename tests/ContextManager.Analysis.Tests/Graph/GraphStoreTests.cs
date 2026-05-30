@@ -852,4 +852,76 @@ public class GraphStoreTests
 
         Assert.AreEqual(0, result.Count);
     }
+
+    /// <summary>
+    /// Two-hop cross-layer chain seeded at the concrete Service:
+    ///   Controller --INJECTS--> IOrchestrator
+    ///   Orchestrator --IMPLEMENTS--> IOrchestrator
+    ///   Orchestrator --INJECTS--> IService
+    ///   Service --IMPLEMENTS--> IService
+    ///
+    /// ImpactBackward("Service", ...) must bridge Service→IService, then discover Orchestrator
+    /// (which injects IService), then bridge Orchestrator→IOrchestrator, then discover Controller
+    /// (which injects IOrchestrator). Both Orchestrator and Controller must appear; interfaces
+    /// and Service itself must be suppressed.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_TwoHopCrossLayer_ServiceSeed_ReachesController()
+    {
+        var store = new GraphStore();
+        var service = new GraphNode("Service", "Class");
+        var iService = new GraphNode("IService", "Interface");
+        var orchestrator = new GraphNode("Orchestrator", "Class");
+        var iOrchestrator = new GraphNode("IOrchestrator", "Interface");
+        var controller = new GraphNode("Controller", "Class");
+
+        store.AddEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
+        store.AddEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("Service", edgeTypes);
+
+        CollectionAssert.Contains(result.ToList(), "Orchestrator");
+        CollectionAssert.Contains(result.ToList(), "Controller");
+        CollectionAssert.DoesNotContain(result.ToList(), "Service");
+        CollectionAssert.DoesNotContain(result.ToList(), "IService");
+        CollectionAssert.DoesNotContain(result.ToList(), "IOrchestrator");
+    }
+
+    /// <summary>
+    /// Two-hop cross-layer chain seeded at the interface IService:
+    ///   Controller --INJECTS--> IOrchestrator
+    ///   Orchestrator --IMPLEMENTS--> IOrchestrator
+    ///   Orchestrator --INJECTS--> IService
+    ///   Service --IMPLEMENTS--> IService
+    ///
+    /// ImpactBackward("IService", ...) must discover Orchestrator (which injects IService),
+    /// then bridge Orchestrator→IOrchestrator, then discover Controller (which injects IOrchestrator).
+    /// Both Orchestrator and Controller must appear; interfaces must be suppressed.
+    /// </summary>
+    [TestMethod]
+    public void ImpactBackward_TwoHopCrossLayer_IServiceSeed_ReachesController()
+    {
+        var store = new GraphStore();
+        var service = new GraphNode("Service", "Class");
+        var iService = new GraphNode("IService", "Interface");
+        var orchestrator = new GraphNode("Orchestrator", "Class");
+        var iOrchestrator = new GraphNode("IOrchestrator", "Interface");
+        var controller = new GraphNode("Controller", "Class");
+
+        store.AddEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
+        store.AddEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        var result = store.ImpactBackward("IService", edgeTypes);
+
+        CollectionAssert.Contains(result.ToList(), "Orchestrator");
+        CollectionAssert.Contains(result.ToList(), "Controller");
+        CollectionAssert.DoesNotContain(result.ToList(), "IService");
+        CollectionAssert.DoesNotContain(result.ToList(), "IOrchestrator");
+    }
 }
