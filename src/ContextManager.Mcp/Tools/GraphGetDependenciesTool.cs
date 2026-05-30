@@ -17,7 +17,7 @@ public sealed class GraphGetDependenciesTool
         _store = store;
     }
 
-    [McpServerTool(Name = "graph_get_dependencies"), Description("Return the immediate in-and-out neighbors of a graph node as compressed node contracts. Each neighbor is represented by its ID and kind; type-kind nodes (Class, Interface, Record) include their kind label. Leaf-kind nodes (Method, Property) include only their ID and kind.")]
+    [McpServerTool(Name = "graph_get_dependencies"), Description("Return the immediate in-and-out neighbors of a graph node as a flat list of neighbor contracts. Each entry carries: id (node ID), kind (Class/Interface/Record/Method/Property), type (edge kind: IMPLEMENTS/INHERITS/INJECTS/CALLS/RETURNS/REFERENCES/CONTAINS), and direction (\"out\" when the queried node is the edge source, \"in\" when it is the edge target). One entry is emitted per (id, type, direction) so the same neighbor reachable via two different edge kinds appears as two distinguishable entries. Output order is out-edges first, then in-edges, in graph-encounter order.")]
     public Task<string> GraphGetDependenciesAsync(
         [Description("The ISymbol.ToDisplayString() ID of the node whose neighbors to retrieve.")] string nodeId,
         CancellationToken ct = default)
@@ -28,7 +28,7 @@ public sealed class GraphGetDependenciesTool
                 AnalysisJson.Options));
 
         var neighbors = _store.GetNeighbors(nodeId);
-        var contracts = neighbors.Select(n => new GraphNodeContract(n.Id, n.Kind)).ToList();
+        var contracts = neighbors.Select(n => new GraphNodeContract(n.Id, n.Kind, n.Type, n.Direction)).ToList();
 
         return Task.FromResult(JsonSerializer.Serialize(contracts, AnalysisJson.Options));
     }

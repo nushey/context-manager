@@ -128,33 +128,51 @@ public class GraphStoreTests
     // ── GetNeighbors ─────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void GetNeighbors_NodeWithOutEdges_ReturnsTargets()
+    public void GetNeighbors_NodeWithOutEdges_ReturnsTargetsWithEdgeMetadata()
     {
         var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("A").Select(n => n.Id).Order().ToList();
+        var neighbors = store.GetNeighbors("A");
 
-        // A -> B (CALLS), A -> D (INJECTS)
-        CollectionAssert.AreEqual(new[] { "B", "D" }, neighbors);
+        // A -> B (CALLS, out), A -> D (INJECTS, out) — out-edges in graph order
+        Assert.AreEqual(2, neighbors.Count);
+        Assert.AreEqual("B", neighbors[0].Id);
+        Assert.AreEqual("CALLS", neighbors[0].Type);
+        Assert.AreEqual("out", neighbors[0].Direction);
+        Assert.AreEqual("D", neighbors[1].Id);
+        Assert.AreEqual("INJECTS", neighbors[1].Type);
+        Assert.AreEqual("out", neighbors[1].Direction);
     }
 
     [TestMethod]
-    public void GetNeighbors_NodeWithInEdgesOnly_ReturnsSources()
+    public void GetNeighbors_NodeWithInEdgesOnly_ReturnsSourcesWithEdgeMetadata()
     {
         var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("C").Select(n => n.Id).Order().ToList();
+        var neighbors = store.GetNeighbors("C");
 
-        // B -> C (only in-edge)
-        CollectionAssert.AreEqual(new[] { "B" }, neighbors);
+        // B -> C (CALLS, in) — only in-edge
+        Assert.AreEqual(1, neighbors.Count);
+        Assert.AreEqual("B", neighbors[0].Id);
+        Assert.AreEqual("CALLS", neighbors[0].Type);
+        Assert.AreEqual("in", neighbors[0].Direction);
     }
 
     [TestMethod]
-    public void GetNeighbors_NodeWithBothInAndOutEdges_ReturnsAll()
+    public void GetNeighbors_NodeWithBothInAndOutEdges_ReturnsOutEdgesBeforeInEdges()
     {
         var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("B").Select(n => n.Id).Order().ToList();
+        var neighbors = store.GetNeighbors("B");
 
-        // Out: C (CALLS), D (INJECTS) — In: A (CALLS)
-        CollectionAssert.AreEqual(new[] { "A", "C", "D" }, neighbors);
+        // Out: C (CALLS, out), D (INJECTS, out) — In: A (CALLS, in)
+        Assert.AreEqual(3, neighbors.Count);
+        Assert.AreEqual("C", neighbors[0].Id);
+        Assert.AreEqual("CALLS", neighbors[0].Type);
+        Assert.AreEqual("out", neighbors[0].Direction);
+        Assert.AreEqual("D", neighbors[1].Id);
+        Assert.AreEqual("INJECTS", neighbors[1].Type);
+        Assert.AreEqual("out", neighbors[1].Direction);
+        Assert.AreEqual("A", neighbors[2].Id);
+        Assert.AreEqual("CALLS", neighbors[2].Type);
+        Assert.AreEqual("in", neighbors[2].Direction);
     }
 
     [TestMethod]
@@ -164,6 +182,35 @@ public class GraphStoreTests
         var neighbors = store.GetNeighbors("Z");
 
         Assert.AreEqual(0, neighbors.Count);
+    }
+
+    [TestMethod]
+    public void GetNeighbors_SameNeighborViaDistinctEdgeKinds_AppearsAsDistinctEntries()
+    {
+        // Node X has two outbound edges to Y: one IMPLEMENTS, one INJECTS
+        // (parallel edges allowed if types differ — but QuikGraph allowParallelEdges:false
+        //  means we need a different scenario: one out-edge and one in-edge of different types
+        //  from the same neighbor node.)
+        //
+        // Graph: X --IMPLEMENTS--> I   (X out, I in)
+        //        Y --INJECTS--> I      (Y out, I in)
+        // For node I: out-edges=none, in-edges=[X→I IMPLEMENTS, Y→I INJECTS]
+        // GetNeighbors("I") → [{X,IMPLEMENTS,in}, {Y,INJECTS,in}]
+        var store = new GraphStore();
+        var x = new GraphNode("X", "Class");
+        var y = new GraphNode("Y", "Class");
+        var i = new GraphNode("I", "Interface");
+
+        store.AddEdge(new GraphEdge(x, i, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(y, i, "INJECTS"));
+
+        var neighbors = store.GetNeighbors("I");
+
+        Assert.AreEqual(2, neighbors.Count);
+        Assert.IsTrue(neighbors.Any(n => n.Id == "X" && n.Type == "IMPLEMENTS" && n.Direction == "in"),
+            "X via IMPLEMENTS inbound must appear");
+        Assert.IsTrue(neighbors.Any(n => n.Id == "Y" && n.Type == "INJECTS" && n.Direction == "in"),
+            "Y via INJECTS inbound must appear");
     }
 
     // ── BfsBackward ──────────────────────────────────────────────────────────

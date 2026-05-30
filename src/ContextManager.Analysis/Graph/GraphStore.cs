@@ -45,20 +45,20 @@ public class GraphStore
 
     public bool TryGetNode(string id, out GraphNode? node) => _nodeById.TryGetValue(id, out node);
 
-    public IReadOnlyList<GraphNode> GetNeighbors(string nodeId)
+    public IReadOnlyList<GraphNeighbor> GetNeighbors(string nodeId)
     {
         if (!_nodeById.TryGetValue(nodeId, out var node))
             return [];
 
-        var neighbors = new HashSet<GraphNode>();
+        var neighbors = new List<GraphNeighbor>();
 
         foreach (var edge in _graph.OutEdges(node))
-            neighbors.Add(edge.Target);
+            neighbors.Add(new GraphNeighbor(edge.Target.Id, edge.Target.Kind, edge.Type, "out"));
 
         foreach (var edge in _graph.InEdges(node))
-            neighbors.Add(edge.Source);
+            neighbors.Add(new GraphNeighbor(edge.Source.Id, edge.Source.Kind, edge.Type, "in"));
 
-        return [.. neighbors];
+        return neighbors;
     }
 
     /// <summary>
