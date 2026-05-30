@@ -58,35 +58,46 @@ public class GraphQueryToolTests
     }
 
     [TestMethod]
-    public async Task GraphGetDependencies_KnownNode_ReturnsNeighborContracts()
+    public async Task GraphGetDependencies_KnownNode_ReturnsNeighborContractsWithEdgeMetadata()
     {
         var tool = new GraphGetDependenciesTool(BuildSampleStore());
 
-        // Node A has out-edges to B and D, no in-edges → neighbors: B, D
+        // Node A has out-edges to B (CALLS) and D (INJECTS), no in-edges
         var json = await tool.GraphGetDependenciesAsync("A");
 
         var contracts = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options);
         Assert.IsNotNull(contracts);
-        var ids = contracts!.Select(c => c.Id).OrderBy(x => x).ToList();
-        CollectionAssert.AreEquivalent(new[] { "B", "D" }, ids);
+        Assert.AreEqual(2, contracts!.Count);
+
+        // Out-edges come first in graph-encounter order
+        Assert.IsTrue(contracts.Any(c => c.Id == "B" && c.Type == "CALLS" && c.Direction == "out"),
+            "B via CALLS outbound must be present");
+        Assert.IsTrue(contracts.Any(c => c.Id == "D" && c.Type == "INJECTS" && c.Direction == "out"),
+            "D via INJECTS outbound must be present");
     }
 
     [TestMethod]
-    public async Task GraphGetDependencies_NodeWithIncomingEdge_IncludesSourceNeighbor()
+    public async Task GraphGetDependencies_NodeWithIncomingEdge_IncludesSourceNeighborWithInDirection()
     {
         var tool = new GraphGetDependenciesTool(BuildSampleStore());
 
-        // Node D has in-edges from A and B, no out-edges → neighbors: A, B
+        // Node D has in-edges from A (INJECTS) and B (INJECTS), no out-edges
         var json = await tool.GraphGetDependenciesAsync("D");
 
         var contracts = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options);
         Assert.IsNotNull(contracts);
-        var ids = contracts!.Select(c => c.Id).OrderBy(x => x).ToList();
+        Assert.AreEqual(2, contracts!.Count);
+
+        Assert.IsTrue(contracts.All(c => c.Direction == "in"),
+            "All entries for D must have direction 'in'");
+        Assert.IsTrue(contracts.All(c => c.Type == "INJECTS"),
+            "All entries for D must have type INJECTS");
+        var ids = contracts.Select(c => c.Id).OrderBy(x => x).ToList();
         CollectionAssert.AreEquivalent(new[] { "A", "B" }, ids);
     }
 
     [TestMethod]
-    public async Task GraphGetDependencies_ContractHasCorrectKind()
+    public async Task GraphGetDependencies_ContractHasCorrectKindAndEdgeFields()
     {
         var tool = new GraphGetDependenciesTool(BuildSampleStore());
 
@@ -97,9 +108,39 @@ public class GraphQueryToolTests
 
         var dContract = contracts!.Single(c => c.Id == "D");
         Assert.AreEqual("Interface", dContract.Kind);
+        Assert.AreEqual("INJECTS", dContract.Type);
+        Assert.AreEqual("out", dContract.Direction);
 
         var bContract = contracts!.Single(c => c.Id == "B");
         Assert.AreEqual("Class", bContract.Kind);
+        Assert.AreEqual("CALLS", bContract.Type);
+        Assert.AreEqual("out", bContract.Direction);
+    }
+
+    [TestMethod]
+    public async Task GraphGetDependencies_NeighborWithBothInAndOutEdges_AppearsAsDistinctEntries()
+    {
+        // Graph: A --IMPLEMENTS--> I (out from A)
+        //        B --INJECTS--> A   (in to A)
+        // For node A: out-entry {I, IMPLEMENTS, out}, in-entry {B, INJECTS, in}
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        var i = new GraphNode("I", "Interface");
+        var b = new GraphNode("B", "Class");
+        store.AddEdge(new GraphEdge(a, i, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(b, a, "INJECTS"));
+
+        var tool = new GraphGetDependenciesTool(store);
+        var json = await tool.GraphGetDependenciesAsync("A");
+
+        var contracts = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options);
+        Assert.IsNotNull(contracts);
+        Assert.AreEqual(2, contracts!.Count);
+
+        Assert.IsTrue(contracts.Any(c => c.Id == "I" && c.Type == "IMPLEMENTS" && c.Direction == "out"),
+            "I via IMPLEMENTS outbound must be present");
+        Assert.IsTrue(contracts.Any(c => c.Id == "B" && c.Type == "INJECTS" && c.Direction == "in"),
+            "B via INJECTS inbound must be present");
     }
 
     // ── GraphImpactAnalysisTool ──────────────────────────────────────────────
