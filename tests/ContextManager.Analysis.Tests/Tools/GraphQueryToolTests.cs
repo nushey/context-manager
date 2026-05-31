@@ -252,6 +252,8 @@ public class GraphQueryToolTests
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         Assert.IsNotNull(result);
         Assert.AreEqual(0, result!.Diagnostics.Count);
+        // Bug 3 lock-in: the implementor Impl must now appear alongside the direct consumer X.
+        CollectionAssert.AreEquivalent(new[] { "Impl", "X" }, result.AffectedIds.ToList());
     }
 
     [TestMethod]
@@ -281,6 +283,10 @@ public class GraphQueryToolTests
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         Assert.IsNotNull(result);
         Assert.AreEqual(0, result!.Diagnostics.Count);
+        // Bug 3 lock-in: ConcreteClass is the start node (its outbound interface IService is
+        // bridged out of the result), but X — which injects IService — surfaces transitively
+        // through that bridged interface.
+        CollectionAssert.AreEquivalent(new[] { "X" }, result.AffectedIds.ToList());
     }
 
     [TestMethod]
