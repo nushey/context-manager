@@ -283,6 +283,135 @@ public class GraphQueryToolTests
         Assert.AreEqual(0, result!.Diagnostics.Count);
     }
 
+    [TestMethod]
+    public async Task GraphImpactAnalysis_InterfaceWithImplementors_IncludesImplementorsInAffectedIds()
+    {
+        // Bug 3: an interface's implementors must appear in its impact set.
+        // Graph: ImplA --IMPLEMENTS--> IService
+        //        ImplB --IMPLEMENTS--> IService
+        //        X --INJECTS--> IService
+        var store = new GraphStore();
+        var implA = new GraphNode("ImplA", "Class");
+        var implB = new GraphNode("ImplB", "Class");
+        var x = new GraphNode("X", "Class");
+        var iface = new GraphNode("IService", "Interface");
+        store.AddEdge(new GraphEdge(implA, iface, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(implB, iface, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IService");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        CollectionAssert.AreEquivalent(new[] { "ImplA", "ImplB", "X" }, result!.AffectedIds.ToList());
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_FoundationalInterfaceNoDirectConsumers_ReturnsImplementorsAndTransitiveConsumers()
+    {
+        // Bug 4: IEntity has no direct REFERENCES/INJECTS consumers, but its implementors
+        // (and their downstream consumers) must surface. The result must be non-empty.
+        // Graph: User  --IMPLEMENTS--> IEntity
+        //        Order --IMPLEMENTS--> IEntity
+        //        Service --INJECTS--> User   (transitive consumer of an implementor)
+        var store = new GraphStore();
+        var user = new GraphNode("User", "Class");
+        var order = new GraphNode("Order", "Class");
+        var service = new GraphNode("Service", "Class");
+        var entity = new GraphNode("IEntity", "Interface");
+        store.AddEdge(new GraphEdge(user, entity, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(order, entity, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(service, user, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IEntity");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        Assert.IsTrue(result!.AffectedIds.Count > 0, "Foundational interface must not return empty.");
+        CollectionAssert.AreEquivalent(
+            new[] { "User", "Order", "Service" }, result.AffectedIds.ToList());
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_InterfaceReachedTransitively_PullsInItsImplementors()
+    {
+        // Implementors must be reached even when the interface is hit mid-BFS, not as start node.
+        // Graph: Impl --IMPLEMENTS--> ITransitive
+        //        ITransitive --INJECTS--> IStart   (so ITransitive is reached backward from IStart)
+        var store = new GraphStore();
+        var impl = new GraphNode("Impl", "Class");
+        var iTransitive = new GraphNode("ITransitive", "Interface");
+        var iStart = new GraphNode("IStart", "Interface");
+        store.AddEdge(new GraphEdge(impl, iTransitive, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(iTransitive, iStart, "INJECTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IStart");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        // ITransitive is a backward consumer; once dequeued, its implementor Impl must appear.
+        CollectionAssert.AreEquivalent(
+            new[] { "ITransitive", "Impl" }, result!.AffectedIds.ToList());
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_DiamondImplementsGraph_TerminatesWithNoDuplicates()
+    {
+        // Diamond/cyclic IMPLEMENTS reach must terminate with no duplicate entries.
+        // Graph: IDerived --IMPLEMENTS--> IBase   (interface-to-interface)
+        //        Impl --IMPLEMENTS--> IBase
+        //        Impl --IMPLEMENTS--> IDerived
+        // Querying IBase reaches IDerived (implementor) and Impl from two paths.
+        var store = new GraphStore();
+        var iBase = new GraphNode("IBase", "Interface");
+        var iDerived = new GraphNode("IDerived", "Interface");
+        var impl = new GraphNode("Impl", "Class");
+        store.AddEdge(new GraphEdge(iDerived, iBase, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(impl, iBase, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(impl, iDerived, "IMPLEMENTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("IBase");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        var ids = result!.AffectedIds.ToList();
+        Assert.AreEqual(ids.Distinct().Count(), ids.Count, "No duplicate entries allowed.");
+        CollectionAssert.AreEquivalent(new[] { "IDerived", "Impl" }, ids);
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_OutboundBridgedInterfaceStaysOutOfResult_ImplementorsStayIn()
+    {
+        // Result-vs-routing invariant: an interface bridged OUTBOUND (the start class implements it)
+        // is routing-only and must stay OUT of the result; a class implementing that interface
+        // (inbound) must be IN the result.
+        // Graph: Start --IMPLEMENTS--> IShared   (outbound bridge from Start → IShared excluded)
+        //        Other --IMPLEMENTS--> IShared   (inbound implementor → included)
+        var store = new GraphStore();
+        var start = new GraphNode("Start", "Class");
+        var other = new GraphNode("Other", "Class");
+        var iShared = new GraphNode("IShared", "Interface");
+        store.AddEdge(new GraphEdge(start, iShared, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(other, iShared, "IMPLEMENTS"));
+
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("Start");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        Assert.IsNotNull(result);
+        // IShared is bridged outbound (seed) → excluded; Other is an implementor → included.
+        CollectionAssert.AreEquivalent(new[] { "Other" }, result!.AffectedIds.ToList());
+    }
+
     // ── GraphPathFindTool ────────────────────────────────────────────────────
 
     [TestMethod]
