@@ -22,6 +22,7 @@ public class EdgeExtractorTests
     private static readonly string GenericConstructorClassPath = FixturePath("GenericConstructorClass.cs");
     private static readonly string TypeWithMembersPath = FixturePath("TypeWithMembers.cs");
     private static readonly string TypeWithReferencesPath = FixturePath("TypeWithReferences.cs");
+    private static readonly string OpenGenericImplementationPath = FixturePath("OpenGenericImplementation.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -141,7 +142,10 @@ public class EdgeExtractorTests
             e.Target.Id.Contains("IRepository"));
 
         Assert.IsNotNull(injectsEdge,
-            $"Expected INJECTS edge from MyRepositoryConsumer to IRepository<MyEntity>. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+            $"Expected INJECTS edge from MyRepositoryConsumer to IRepository<T> (open). Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        // The target must be the OPEN generic, not the closed IRepository<MyEntity> instantiation.
+        Assert.IsFalse(injectsEdge!.Target.Id.Contains("MyEntity"),
+            $"INJECTS target must be the open generic IRepository<T>, not the closed form. Got: {injectsEdge.Target.Id}");
     }
 
     [TestMethod]
@@ -391,5 +395,65 @@ public class EdgeExtractorTests
 
         Assert.AreEqual(distinct.Count, referencesEdges.Count,
             $"Duplicate REFERENCES edges detected. All REFERENCES edges: [{string.Join(", ", referencesEdges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    public void Extract_InjectsClosedGeneric_TargetsOpenGenericNotClosedForm()
+    {
+        var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var injectsEdge = edges.FirstOrDefault(e =>
+            e.Type == "INJECTS" &&
+            e.Source.Id.Contains("CatalogConsumer") &&
+            e.Target.Id.Contains("IStore"));
+
+        Assert.IsNotNull(injectsEdge,
+            $"Expected INJECTS edge from CatalogConsumer to IStore<T> (open). Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        Assert.IsFalse(injectsEdge!.Target.Id.Contains("Catalog"),
+            $"INJECTS target must be the open generic IStore<T>, not the closed IStore<Catalog>. Got: {injectsEdge.Target.Id}");
+
+        var closedInjects = edges.Any(e =>
+            e.Type == "INJECTS" && e.Target.Id.Contains("Catalog") && e.Target.Id.Contains("IStore"));
+        Assert.IsFalse(closedInjects,
+            "No INJECTS edge to the closed generic IStore<Catalog> should be created.");
+    }
+
+    [TestMethod]
+    public void Extract_ReturnsClosedGeneric_TargetsOpenGenericNotClosedForm()
+    {
+        var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var returnsEdge = edges.FirstOrDefault(e =>
+            e.Type == "RETURNS" &&
+            e.Source.Id.Contains("GetStore") &&
+            e.Target.Id.Contains("IStore"));
+
+        Assert.IsNotNull(returnsEdge,
+            $"Expected RETURNS edge from GetStore to IStore<T> (open). Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        Assert.IsFalse(returnsEdge!.Target.Id.Contains("Catalog"),
+            $"RETURNS target must be the open generic IStore<T>, not the closed IStore<Catalog>. Got: {returnsEdge.Target.Id}");
+    }
+
+    [TestMethod]
+    public void Extract_ClosedGenericTypeArg_SurfacesAsReferencesEdge()
+    {
+        var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        var typeArgReference = edges.Any(e =>
+            e.Type == "REFERENCES" &&
+            e.Target.Id.Contains("Catalog") &&
+            !e.Target.Id.Contains("IStore"));
+
+        Assert.IsTrue(typeArgReference,
+            $"Expected a REFERENCES edge to the type argument Catalog. Edges found: [{string.Join(", ", edges.Where(e => e.Type == "REFERENCES").Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
 }

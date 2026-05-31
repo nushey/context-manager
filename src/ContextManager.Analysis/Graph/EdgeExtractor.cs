@@ -51,15 +51,9 @@ public class EdgeExtractor
                 foreach (var param in typeDecl.ParameterList.Parameters)
                 {
                     if (param.Type is null) continue;
-                    var paramSymbol = model.GetTypeInfo(param.Type, ct).Type;
-                    if (paramSymbol is null || !IsSourceSymbol(paramSymbol))
-                        continue;
-
-                    var targetNode = NodeFor(paramSymbol);
-                    if (targetNode is null)
-                        continue;
-
-                    AddEdge(sourceNode, targetNode, "INJECTS", seen, edges);
+                    EmitGenericAwareEdge(
+                        model.GetTypeInfo(param.Type, ct).Type,
+                        sourceNode, "INJECTS", seen, edges);
                 }
             }
 
@@ -75,15 +69,9 @@ public class EdgeExtractor
                 foreach (var param in chosen.ParameterList.Parameters)
                 {
                     if (param.Type is null) continue;
-                    var paramSymbol = model.GetTypeInfo(param.Type, ct).Type;
-                    if (paramSymbol is null || !IsSourceSymbol(paramSymbol))
-                        continue;
-
-                    var targetNode = NodeFor(paramSymbol);
-                    if (targetNode is null)
-                        continue;
-
-                    AddEdge(sourceNode, targetNode, "INJECTS", seen, edges);
+                    EmitGenericAwareEdge(
+                        model.GetTypeInfo(param.Type, ct).Type,
+                        sourceNode, "INJECTS", seen, edges);
                 }
             }
 
@@ -159,14 +147,10 @@ public class EdgeExtractor
 
                 var methodNode = new GraphNode(methodSymbol.ToDisplayString(), "Method");
 
-                // RETURNS edges: method return type → if source type
-                var returnSymbol = model.GetTypeInfo(methodDecl.ReturnType, ct).Type;
-                if (returnSymbol is not null && IsSourceSymbol(returnSymbol))
-                {
-                    var returnNode = NodeFor(returnSymbol);
-                    if (returnNode is not null)
-                        AddEdge(methodNode, returnNode, "RETURNS", seen, edges);
-                }
+                // RETURNS edges: method return type → if source type (open generic for constructed)
+                EmitGenericAwareEdge(
+                    model.GetTypeInfo(methodDecl.ReturnType, ct).Type,
+                    methodNode, "RETURNS", seen, edges);
 
                 // CALLS edges: invocations within the method body
                 if (methodDecl.Body is not null || methodDecl.ExpressionBody is not null)
@@ -235,6 +219,45 @@ public class EdgeExtractor
             return;
 
         edges.Add(new GraphEdge(source, target, type));
+    }
+
+    // Emits a primary edge (INJECTS / RETURNS) from sourceNode for the given type symbol.
+    // For constructed generics (e.g. IRepository<MyEntity>), the primary edge targets the open
+    // generic definition (OriginalDefinition) — never the closed form, which has no standalone
+    // node in the graph — and each user-defined type argument is emitted as a REFERENCES edge so
+    // it is not lost. Mirrors EmitReferencesForType's collapse for the non-REFERENCES edge types.
+    private static void EmitGenericAwareEdge(
+        ITypeSymbol? typeSymbol,
+        GraphNode sourceNode,
+        string edgeType,
+        HashSet<(string, string, string)> seen,
+        List<GraphEdge> edges)
+    {
+        if (typeSymbol is null)
+            return;
+
+        if (typeSymbol is INamedTypeSymbol { IsGenericType: true } named
+            && !named.OriginalDefinition.Equals(named, SymbolEqualityComparer.Default))
+        {
+            // Constructed generic: target the open generic definition with the primary edge,
+            // and surface each type argument as a REFERENCES edge.
+            var openDef = named.OriginalDefinition;
+            if (IsSourceSymbol(openDef))
+            {
+                var defNode = NodeFor(openDef);
+                if (defNode is not null)
+                    AddEdge(sourceNode, defNode, edgeType, seen, edges);
+            }
+
+            foreach (var typeArg in named.TypeArguments)
+                EmitReferencesForType(typeArg, sourceNode, seen, edges);
+        }
+        else if (IsSourceSymbol(typeSymbol))
+        {
+            var targetNode = NodeFor(typeSymbol);
+            if (targetNode is not null)
+                AddEdge(sourceNode, targetNode, edgeType, seen, edges);
+        }
     }
 
     // Emits REFERENCES edge(s) from sourceNode for the given type symbol (if user-defined).
