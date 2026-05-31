@@ -165,6 +165,26 @@ public class GraphStore
                 }
             }
 
+            // Inbound IMPLEMENTS: the inverse of outbound bridging. Whenever an interface is
+            // dequeued, its implementor classes are real compile-time breakage — they go INTO
+            // the result (rolled up if a member) AND are enqueued for full transitive reach.
+            // Unlike bridged interfaces, implementors are NOT added to seedIds/bridged, so the
+            // reflection diagnostic and result-vs-routing distinction are preserved.
+            foreach (var implementor in GetImplementors(current))
+            {
+                if (!visited.Add(implementor))
+                    continue;
+
+                queue.Enqueue(implementor);
+
+                var reportId = IsMemberNode(implementor)
+                    ? GetDeclaringType(implementor)?.Id ?? implementor.Id
+                    : implementor.Id;
+
+                if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
+                    result.Add(reportId);
+            }
+
             foreach (var edge in _graph.InEdges(current))
             {
                 if (!edgeTypes.Contains(edge.Type))
@@ -225,6 +245,12 @@ public class GraphStore
         _graph.OutEdges(typeNode)
               .Where(e => e.Type == "IMPLEMENTS")
               .Select(e => e.Target);
+
+    // Returns all nodes connected via inbound IMPLEMENTS edges (the classes that implement a type).
+    private IEnumerable<GraphNode> GetImplementors(GraphNode typeNode) =>
+        _graph.InEdges(typeNode)
+              .Where(e => e.Type == "IMPLEMENTS")
+              .Select(e => e.Source);
 
     // A node is a member if it has at least one inbound CONTAINS edge.
     private bool IsMemberNode(GraphNode node) =>
