@@ -135,17 +135,21 @@ public static class MemberExtractor
         if (entries.Count == 0)
             return (null, []);
 
-        // For classes: heuristic — first entry is base class if it doesn't start with 'I'
-        if (node is ClassDeclarationSyntax && !entries[0].StartsWith("I", StringComparison.Ordinal))
+        // For classes: heuristic — first entry is base class unless it looks like an
+        // interface name: 'I' followed by uppercase (IRepository yes, IndexManager no)
+        if (node is ClassDeclarationSyntax && !LooksLikeInterfaceName(entries[0]))
         {
             var baseClass = entries[0];
             var ifaces = entries.Skip(1).ToList();
             return (baseClass, ifaces);
         }
 
-        // Interfaces, structs, and classes whose first entry starts with 'I' → all are implements
+        // Interfaces, structs, and classes whose first entry looks like an interface → all are implements
         return (null, entries);
     }
+
+    private static bool LooksLikeInterfaceName(string typeName)
+        => typeName.Length >= 2 && typeName[0] == 'I' && char.IsUpper(typeName[1]);
 
     private static IReadOnlyList<Models.ParameterInfo> ExtractConstructorDependencies(TypeDeclarationSyntax node)
     {
@@ -168,9 +172,13 @@ public static class MemberExtractor
 
         foreach (var method in node.Members.OfType<MethodDeclarationSyntax>())
         {
-            // Interface methods with no explicit modifier are implicitly public
+            var explicitSpecifier = method.ExplicitInterfaceSpecifier;
+
+            // Explicit interface implementations are syntactically private but reachable
+            // through the interface — they belong to the contract, reported as public.
+            // Interface methods with no explicit modifier are implicitly public.
             string methodAccess;
-            if (isInterface && !method.Modifiers.Any())
+            if (explicitSpecifier is not null || (isInterface && !method.Modifiers.Any()))
                 methodAccess = "public";
             else
                 methodAccess = AccessLevel.FromModifiers(method.Modifiers, isTopLevelType: false);
@@ -188,7 +196,9 @@ public static class MemberExtractor
             var modifiers = NullIfEmpty(ExtractNonAccessModifiers(method.Modifiers));
 
             result.Add(new Models.MethodInfo(
-                Name: method.Identifier.ValueText,
+                Name: explicitSpecifier is not null
+                    ? $"{explicitSpecifier.Name}.{method.Identifier.ValueText}"
+                    : method.Identifier.ValueText,
                 Access: methodAccess,
                 ReturnType: method.ReturnType.ToString(),
                 StartLine: lineSpan.StartLinePosition.Line + 1,
@@ -233,14 +243,21 @@ public static class MemberExtractor
 
         foreach (var prop in node.Members.OfType<PropertyDeclarationSyntax>())
         {
-            var propAccess = AccessLevel.FromModifiers(prop.Modifiers, isTopLevelType: false);
+            var explicitSpecifier = prop.ExplicitInterfaceSpecifier;
+
+            // Same rule as methods: explicit interface implementations are contract members.
+            var propAccess = explicitSpecifier is not null
+                ? "public"
+                : AccessLevel.FromModifiers(prop.Modifiers, isTopLevelType: false);
             if (propAccess == "private")
                 continue;
 
             bool? isRequired = prop.Modifiers.Any(m => m.ValueText == "required") ? true : null;
 
             result.Add(new Models.PropertyInfo(
-                Name: prop.Identifier.ValueText,
+                Name: explicitSpecifier is not null
+                    ? $"{explicitSpecifier.Name}.{prop.Identifier.ValueText}"
+                    : prop.Identifier.ValueText,
                 Type: prop.Type.ToString(),
                 Access: propAccess,
                 IsRequired: isRequired,
