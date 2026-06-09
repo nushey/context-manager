@@ -45,20 +45,69 @@ public class GraphStore
 
     public bool TryGetNode(string id, out GraphNode? node) => _nodeById.TryGetValue(id, out node);
 
-    public IReadOnlyList<GraphNeighbor> GetNeighbors(string nodeId)
+    /// <summary>
+    /// Aggregated, type-aware neighbor query. For a type node the aggregation scope is the
+    /// node plus its <c>CONTAINS</c> members; for a member node it is the member alone.
+    /// Every in/out edge of the scope is rolled up to the neighbor's declaring type and
+    /// counted per edge kind. <c>CONTAINS</c> edges and neighbors inside the scope are
+    /// excluded entirely (structural noise — <c>inspect_file</c> is the canonical member
+    /// source). Returns one entry per (rolled-up id, direction): out entries first, then
+    /// in entries, each in graph-encounter order.
+    /// </summary>
+    public IReadOnlyList<GraphNeighbor> GetAggregatedNeighbors(string nodeId)
     {
         if (!_nodeById.TryGetValue(nodeId, out var node))
             return [];
 
-        var neighbors = new List<GraphNeighbor>();
+        var scope = new List<GraphNode> { node! };
+        if (!IsMemberNode(node!))
+            scope.AddRange(GetContainedMembers(node!));
 
-        foreach (var edge in _graph.OutEdges(node))
-            neighbors.Add(new GraphNeighbor(edge.Target.Id, edge.Target.Kind, edge.Type, "out"));
+        var scopeSet = new HashSet<GraphNode>(scope);
+        var entries = new List<(string Id, string Kind, string Direction, Dictionary<string, int> EdgeKinds)>();
+        var indexByKey = new Dictionary<(string Id, string Direction), int>();
 
-        foreach (var edge in _graph.InEdges(node))
-            neighbors.Add(new GraphNeighbor(edge.Source.Id, edge.Source.Kind, edge.Type, "in"));
+        void Accumulate(GraphNode neighbor, string edgeType, string direction)
+        {
+            var rolled = IsMemberNode(neighbor) ? GetDeclaringType(neighbor) ?? neighbor : neighbor;
+            var key = (rolled.Id, direction);
 
-        return neighbors;
+            if (!indexByKey.TryGetValue(key, out var idx))
+            {
+                idx = entries.Count;
+                indexByKey[key] = idx;
+                entries.Add((rolled.Id, rolled.Kind, direction, new Dictionary<string, int>(StringComparer.Ordinal)));
+            }
+
+            var kinds = entries[idx].EdgeKinds;
+            kinds[edgeType] = kinds.TryGetValue(edgeType, out var count) ? count + 1 : 1;
+        }
+
+        foreach (var scopeNode in scope)
+        {
+            foreach (var edge in _graph.OutEdges(scopeNode))
+            {
+                if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Target))
+                    continue;
+
+                Accumulate(edge.Target, edge.Type, "out");
+            }
+        }
+
+        foreach (var scopeNode in scope)
+        {
+            foreach (var edge in _graph.InEdges(scopeNode))
+            {
+                if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Source))
+                    continue;
+
+                Accumulate(edge.Source, edge.Type, "in");
+            }
+        }
+
+        return entries
+            .Select(e => new GraphNeighbor(e.Id, e.Kind, e.Direction, e.EdgeKinds))
+            .ToList();
     }
 
     /// <summary>
