@@ -141,6 +141,22 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_PrimaryCtorClass_ConstructorDependencies()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("PrimaryCtorService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "PrimaryCtorService");
+        Assert.IsNotNull(type.ConstructorDependencies);
+        Assert.AreEqual(2, type.ConstructorDependencies!.Count);
+        Assert.AreEqual("IOrderRepository", type.ConstructorDependencies[0].Type);
+        Assert.AreEqual("orderRepository", type.ConstructorDependencies[0].Name);
+        Assert.AreEqual("IEventBus", type.ConstructorDependencies[1].Type);
+        Assert.AreEqual("eventBus", type.ConstructorDependencies[1].Name);
+    }
+
+    [TestMethod]
     public void Analyze_ServiceWithDependencies_MethodAttributes()
     {
         var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);

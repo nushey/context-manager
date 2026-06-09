@@ -61,11 +61,11 @@ public class CrossReferenceResolver
                     }
                 }
 
-                // --- constructor dependencies ---
-                // Records: primary constructor parameters
-                if (typeDecl is RecordDeclarationSyntax record && record.ParameterList is not null)
+                // --- constructor dependencies (primary ctor first, fallback declared ctor) ---
+                var ctorParameters = ConstructorParameterLocator.Locate(typeDecl);
+                if (ctorParameters is not null)
                 {
-                    foreach (var param in record.ParameterList.Parameters)
+                    foreach (var param in ctorParameters.Value)
                     {
                         if (param.Type is null) continue;
                         var symbol = model.GetTypeInfo(param.Type, ct).Type;
@@ -73,28 +73,6 @@ public class CrossReferenceResolver
                         var resolvedFile = ResolveFile(symbol, inputPaths);
                         AddReference(typeName, toName, "constructor", resolvedFile,
                             seen, references, unresolvedSeen, unresolved);
-                    }
-                }
-                else
-                {
-                    // Classes/structs: pick constructor with most parameters
-                    var ctors = typeDecl.Members
-                        .OfType<ConstructorDeclarationSyntax>()
-                        .Where(c => !c.Modifiers.Any(m => m.ValueText == "static"))
-                        .ToList();
-
-                    if (ctors.Count > 0)
-                    {
-                        var chosen = ctors.MaxBy(c => c.ParameterList.Parameters.Count)!;
-                        foreach (var param in chosen.ParameterList.Parameters)
-                        {
-                            if (param.Type is null) continue;
-                            var symbol = model.GetTypeInfo(param.Type, ct).Type;
-                            var toName = param.Type.ToString();
-                            var resolvedFile = ResolveFile(symbol, inputPaths);
-                            AddReference(typeName, toName, "constructor", resolvedFile,
-                                seen, references, unresolvedSeen, unresolved);
-                        }
                     }
                 }
 

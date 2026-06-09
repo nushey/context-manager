@@ -134,21 +134,8 @@ public static class MemberExtractor
 
     private static IReadOnlyList<Models.ParameterInfo> ExtractConstructorDependencies(TypeDeclarationSyntax node)
     {
-        // Records use their primary constructor parameter list
-        if (node is RecordDeclarationSyntax record && record.ParameterList is not null)
-            return MapParameters(record.ParameterList.Parameters);
-
-        // Classes and structs: pick the non-static constructor with the most parameters
-        var ctors = node.Members
-            .OfType<ConstructorDeclarationSyntax>()
-            .Where(c => !c.Modifiers.Any(m => m.ValueText == "static"))
-            .ToList();
-
-        if (ctors.Count == 0)
-            return [];
-
-        var chosen = ctors.MaxBy(c => c.ParameterList.Parameters.Count)!;
-        return MapParameters(chosen.ParameterList.Parameters);
+        var parameters = ConstructorParameterLocator.Locate(node);
+        return parameters is null ? [] : MapParameters(parameters.Value);
     }
 
     private static IReadOnlyList<Models.ParameterInfo> MapParameters(

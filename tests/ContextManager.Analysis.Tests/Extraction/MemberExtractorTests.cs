@@ -126,6 +126,20 @@ public class MemberExtractorTests
         Assert.IsTrue(result.Properties.Any(p => p.Name == "OrderCount"));
     }
 
+    [TestMethod]
+    public void Class_PrimaryConstructor_PopulatesConstructorDependencies()
+    {
+        var node = ParseFromFixture(@"Fixtures/PrimaryCtorService.cs");
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.IsNotNull(result.ConstructorDependencies);
+        Assert.AreEqual(2, result.ConstructorDependencies!.Count);
+        Assert.AreEqual("IOrderRepository", result.ConstructorDependencies[0].Type);
+        Assert.AreEqual("orderRepository", result.ConstructorDependencies[0].Name);
+        Assert.AreEqual("IEventBus", result.ConstructorDependencies[1].Type);
+        Assert.AreEqual("eventBus", result.ConstructorDependencies[1].Name);
+    }
+
     // ── Public const and static readonly fields ───────────────────────────────
 
     [TestMethod]
