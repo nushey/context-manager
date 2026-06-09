@@ -181,7 +181,7 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_MethodParameterBclType_ViaParameterAndInUnresolved()
+    public async Task AnalyzeAsync_MethodParameterBclType_ViaParameterButNotUnresolved()
     {
         var analyzer = CreateAnalyzer();
         var result = await analyzer.AnalyzeAsync(ThreeFilePaths);
@@ -192,8 +192,27 @@ public class ContextAnalyzerTests
 
         Assert.IsNotNull(reference, "Expected a reference with Via == \"parameter\" and To == \"CancellationToken\"");
         Assert.IsNull(reference.ResolvedFile, "CancellationToken is a BCL type — ResolvedFile must be null");
-        Assert.IsTrue(
+        Assert.IsFalse(
             result.Unresolved.Contains("CancellationToken", StringComparer.Ordinal),
-            $"Expected 'CancellationToken' in Unresolved (BCL type). Got: [{string.Join(", ", result.Unresolved)}]");
+            $"BCL types resolve to metadata and must stay out of Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_BclTypes_ExcludedFromUnresolved_UnknownUserTypeRemains()
+    {
+        var bclHeavyServicePath = FixturePath("BclHeavyService.cs");
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync([bclHeavyServicePath]);
+
+        foreach (var bcl in new[] { "string", "int?", "Task<string>", "List<string>", "bool" })
+        {
+            Assert.IsFalse(
+                result.Unresolved.Contains(bcl, StringComparer.Ordinal),
+                $"BCL type '{bcl}' must not appear in Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
+        }
+
+        Assert.IsTrue(
+            result.Unresolved.Contains("UnknownPolicy", StringComparer.Ordinal),
+            $"Genuinely unknown user type must stay in Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
     }
 }
