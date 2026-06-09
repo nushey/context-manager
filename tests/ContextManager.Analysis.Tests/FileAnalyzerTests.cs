@@ -486,6 +486,63 @@ public class FileAnalyzerTests
         Assert.AreEqual("get;", type.Properties!.First(p => p.Name == "ExpressionBodied").Accessors);
     }
 
+    // ── Explicit interface implementations ────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_ExplicitInterfaceMethod_QualifiedNameAndPublicAccess()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        var method = type.Methods!.FirstOrDefault(m => m.Name == "IAuditable.Audit");
+        Assert.IsNotNull(method,
+            $"Expected explicit implementation 'IAuditable.Audit'. Got: [{string.Join(", ", type.Methods!.Select(m => m.Name))}]");
+        Assert.AreEqual("public", method.Access);
+    }
+
+    [TestMethod]
+    public void Analyze_ExplicitInterfaceProperty_QualifiedNameAndPublicAccess()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        var prop = type.Properties!.FirstOrDefault(p => p.Name == "IAuditable.AuditLabel");
+        Assert.IsNotNull(prop,
+            $"Expected explicit implementation 'IAuditable.AuditLabel'. Got: [{string.Join(", ", type.Properties!.Select(p => p.Name))}]");
+        Assert.AreEqual("public", prop.Access);
+        Assert.AreEqual("get;", prop.Accessors);
+    }
+
+    // ── Base-vs-interface heuristic ───────────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_IPlusLowercaseBaseType_ReportedAsBaseNotImplements()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("IndexManagerCache.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "IndexManagerCache");
+        Assert.AreEqual("IndexManager", type.Base);
+        Assert.IsNull(type.Implements);
+    }
+
+    [TestMethod]
+    public void Analyze_IPlusUppercaseFirstEntry_StillImplements()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        Assert.IsNull(type.Base);
+        CollectionAssert.AreEqual(new[] { "IAuditable" }, type.Implements!.ToArray());
+    }
+
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [TestMethod]
