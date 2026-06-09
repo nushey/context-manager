@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-Context Manager is a C# / .NET 8 MCP (Model Context Protocol) server that uses Roslyn (`Microsoft.CodeAnalysis.CSharp`) to extract structural context from C# source files. AI coding agents call it instead of reading raw source when they only need type signatures, dependencies, attributes, and relationships. The server exposes tools over stdio transport via the `ModelContextProtocol` SDK, hosted with `Microsoft.Extensions.Hosting`. The full product plan lives in `context-manager-csharp-final.md` at the repo root. Feature work is driven through Spec-Driven Development under `.spec/<feature-slug>/`.
+Context Manager is a C# / .NET 10 MCP (Model Context Protocol) server that uses Roslyn (`Microsoft.CodeAnalysis.CSharp`) to extract structural context from C# source files — and builds a directed knowledge graph of a whole solution so agents can navigate before they read. AI coding agents call it instead of reading raw source when they only need type signatures, dependencies, attributes, and relationships. The server exposes tools over stdio transport via the `ModelContextProtocol` SDK, hosted with `Microsoft.Extensions.Hosting`. Feature work is driven through Spec-Driven Development under `.spec/<feature-slug>/`.
 
 ## Tech Stack
 
-- **Backend**: C# 12 / .NET 8, Roslyn (`Microsoft.CodeAnalysis.CSharp`), `ModelContextProtocol` SDK (stdio transport), `Microsoft.Extensions.Hosting` (DI/host)
+- **Backend**: C# / .NET 10 (`net10.0` across all projects), Roslyn (`Microsoft.CodeAnalysis.CSharp.Workspaces`, `Microsoft.CodeAnalysis.Workspaces.MSBuild`), `QuikGraph` (graph engine), `ModelContextProtocol` SDK (stdio transport), `Microsoft.Extensions.Hosting` (DI/host), `Microsoft.Build.Locator` (lazy MSBuild registration for solution scans)
 - **Testing**: MSTest (`Microsoft.NET.Test.Sdk`, `MSTest.TestFramework`, `MSTest.TestAdapter`)
 - **Build**: `dotnet` CLI, solution file `ContextManager.sln`
 
@@ -16,44 +16,53 @@ Context Manager is a C# / .NET 8 MCP (Model Context Protocol) server that uses R
 |--------|---------|
 | `.claude/` | Claude Code project settings and hook configuration |
 | `.gemini/` | Gemini AI assistant configuration |
+| `docs/` | Agent-facing docs: `AGENTS-template.md` (drop-in rules for projects that consume the MCP server) |
+| `scripts/` | Auxiliary maintenance scripts |
 | `nupkgs/` | Local NuGet package output directory |
 | `src/ContextManager.Mcp/` | MCP server console app — entry point, tool registration, stdio host wiring |
-| `src/ContextManager.Analysis/` | Roslyn analysis class library — file parsing, type extraction, JSON serialization |
-| `tests/ContextManager.Analysis.Tests/` | MSTest project covering analysis and extraction; includes real `.cs` fixture files parsed at runtime |
-| `.spec/` | SDD artifacts per feature (scope, design, tasks, verify) |
+| `src/ContextManager.Analysis/` | Roslyn analysis class library — file parsing, type extraction, knowledge graph engine, JSON serialization |
+| `tests/ContextManager.Analysis.Tests/` | MSTest project covering analysis, extraction, graph, and tools; real `.cs` fixture files parsed at runtime |
+| `.spec/` | SDD artifacts per feature (scope, design, tasks, verify) — gitignored, lives on disk only |
 
 ## Architecture & Data Flow
 
-The system follows a two-layer architecture: an **MCP layer** (`ContextManager.Mcp`) that handles protocol concerns, and an **Analysis layer** (`ContextManager.Analysis`) that owns all Roslyn work.
+The system follows a two-layer architecture: an **MCP layer** (`ContextManager.Mcp`) that handles protocol concerns, and an **Analysis layer** (`ContextManager.Analysis`) that owns all Roslyn and graph work. MCP tools only validate input, delegate, project to contract records, and serialize — no analysis or graph logic ever lives in the MCP layer.
 
 **Single-file flow** (`inspect_file`): an MCP client calls a tool → `InspectFileTool` (decorated with `McpServerToolType`) receives the request → delegates to `FileAnalyzer`, which orchestrates the parse pipeline → `TypeExtractor` (extends `CSharpSyntaxWalker`) walks the syntax tree and dispatches to `MemberExtractor`, `AttributeExtractor`, `AccessLevel`, and `DtoDetector` → results are serialized through `AnalysisJson` and returned as JSON.
 
-**Multi-file flow** (`inspect_context`): `InspectContextTool` (decorated with `McpServerToolType`) validates input (≤15 files, all paths must exist) → delegates to `ContextAnalyzer`, which reads each file, builds a `CSharpCompilation` from source texts, and reuses `TypeExtractor` for AST walking → `CrossReferenceResolver` uses the `SemanticModel` to resolve constructor dependencies, interface implementations, base types, and method parameter types to their declaring files within the set → compressed results (methods as one-line strings via `MethodSignatureFormatter`, no properties) are serialized and returned as JSON.
+**Multi-file flow** (`inspect_context`): `InspectContextTool` validates input (≤15 files, all paths must exist) → delegates to `ContextAnalyzer`, which reads each file, builds a `CSharpCompilation` from source texts **plus statically-cached framework metadata references** (so BCL types resolve and are excluded from `unresolved`), and reuses `TypeExtractor` for AST walking → `CrossReferenceResolver` uses the `SemanticModel` to resolve constructor dependencies, interface implementations, base types, and method parameter types to their declaring files within the set → compressed results (methods as one-line strings via `MethodSignatureFormatter`, no properties) are serialized and returned as JSON.
+
+**Graph flow** (`project_scan` → query tools): `ProjectScanTool` lazily registers MSBuild via `MsBuildBootstrap`, then `GraphBuilder` loads the solution, runs `EdgeExtractor` per document to emit typed edges (`CONTAINS`, `IMPLEMENTS`, `INHERITS`, `INJECTS`, `CALLS`, `RETURNS`, `REFERENCES` — constructed generics collapse to their open definition), and populates `GraphStore` (QuikGraph bidirectional graph), persisted to `<solution-root>/.context-manager/graph.json` and hydratable at startup. Query tools delegate to `GraphStore`: `GraphGetDependenciesTool` → `GetAggregatedNeighbors` (member edges roll up to the declaring type, one entry per neighbor/direction with `edgeKinds` counts, self-`CONTAINS` excluded), `GraphImpactAnalysisTool` → `ImpactBackward` (transitive backward BFS with member roll-up, continuous interface bridging, inbound-`IMPLEMENTS` traversal, and a reflection-blind-spot diagnostic), `GraphPathFindTool` → `ShortestPath`.
 
 **Architectural anchors:**
 - `TypeExtractor` — the only `CSharpSyntaxWalker` subclass; owns tree traversal. All new type-visit logic goes here.
+- `MemberExtractor` — builds every `TypeInfo`/`MethodInfo`/`PropertyInfo`; owns kind classification, generic name rendering (`RenderTypeName`), modifiers, accessors, events, and explicit interface implementations.
+- `ConstructorParameterLocator` — the single source of truth for "which constructor parameters count as dependencies" (primary constructor first, fallback to the richest declared ctor). Consumed by `MemberExtractor`, `CrossReferenceResolver`, AND `EdgeExtractor` — never reimplement this logic inline.
 - `FileAnalyzer` — single-file orchestration entry point; coordinates extractors and owns error handling.
-- `ContextAnalyzer` — multi-file orchestration entry point; builds `CSharpCompilation`, drives `CrossReferenceResolver`, returns `ContextAnalysis`.
-- `CrossReferenceResolver` — resolves structural references using the `SemanticModel`; classifies each reference as in-set (resolved to a file in the input) or unresolved.
-- `InspectFileTool` — MCP boundary for `inspect_file`; decorated with `McpServerToolType`.
-- `InspectContextTool` — MCP boundary for `inspect_context`; decorated with `McpServerToolType`. Owns input validation (file count limit, missing-file check).
+- `ContextAnalyzer` — multi-file orchestration entry point; builds the referenced `CSharpCompilation`, drives `CrossReferenceResolver`, returns `ContextAnalysis`.
+- `CrossReferenceResolver` — resolves structural references using the `SemanticModel`; in-set references get a `resolvedFile`, unknown user types land in `unresolved` (BCL/metadata types are filtered out).
+- `GraphStore` — owns ALL graph queries (neighbors, impact, paths, serialization). New graph semantics go here, reusing its private helpers (`GetContainedMembers`, `IsMemberNode`, `GetDeclaringType`).
+- `EdgeExtractor` — the only place edges are created; edge-granularity decisions (type-level vs member-level sources) live here.
+- MCP boundaries: `InspectFileTool`, `InspectContextTool` (input validation), `ProjectScanTool`, `GraphGetDependenciesTool`, `GraphImpactAnalysisTool`, `GraphPathFindTool` — all decorated with `McpServerToolType`.
 
 ## Backend Guidelines
 
 **Extending the extraction pipeline:**
-- New extractor classes live in `src/ContextManager.Analysis/Extraction/` and follow the `<Concern>Extractor` naming pattern.
+- New extractor classes live in `src/ContextManager.Analysis/Extraction/` and follow the `<Concern>Extractor` naming pattern (shared helpers like `ConstructorParameterLocator` are the exception).
 - Roslyn tree walkers MUST extend `CSharpSyntaxWalker`, not implement custom recursion.
-- New MCP tools live in `src/ContextManager.Mcp/Tools/` and MUST be decorated with `McpServerToolType`. Parameters use `[Description("...")]` attributes for MCP metadata.
-- DTO/output models live in `src/ContextManager.Mcp/Serialization/` as `record` types with no behavior.
+- Graph logic lives in `src/ContextManager.Analysis/Graph/` — query semantics in `GraphStore`, edge creation in `EdgeExtractor`. MCP graph tools only project results to contracts.
+- New MCP tools live in `src/ContextManager.Mcp/Tools/` and MUST be decorated with `McpServerToolType`. Parameters use `[Description("...")]` attributes for MCP metadata. Tool `[Description]` texts are part of the contract — keep them accurate when behavior changes.
+- DTO/output contracts live in `src/ContextManager.Mcp/Serialization/` as `record` types with no behavior.
+- New output fields on model records are additive nullable with `= null` default; empty collections become `null` (`NullIfEmpty` pattern) so JSON omits them via `WhenWritingNull`.
 
-**Constructor injection**: `FileAnalyzer` and extractors are instantiated and wired through the host's DI container. New extractors should be registered there and injected — not `new`-ed inside callers.
+**Constructor injection**: analyzers, the graph stack (`GraphStore`, `GraphBuilder`, `EdgeExtractor`), and tools are wired through the host's DI container. New components are registered there and injected — not `new`-ed inside callers.
 
 **Async and cancellation**: all `async` methods return `Task`/`Task<T>` and accept `CancellationToken` as the last parameter. Pass it through to Roslyn APIs.
 
 **Roslyn invariants:**
-- The analyzer never follows `<ProjectReference>` boundaries. Scope = the file passed in.
-- Method bodies, XML doc comments, and private members are excluded from output by design — do not add them.
-- Output JSON must be deterministic: preserve declaration order from the syntax tree; never sort alphabetically.
+- The analyzer never follows `<ProjectReference>` boundaries. Scope = the file passed in (`project_scan` is the only solution-wide operation).
+- Method bodies, XML doc comments, and private members are excluded from output by design — do not add them. Two deliberate nuances: explicit interface implementations are reported with their interface-qualified name and `access: "public"` (they are reachable contract), and public events are part of the contract.
+- Output JSON must be deterministic: preserve declaration order from the syntax tree (graph output preserves encounter order); never sort alphabetically.
 
 ## Conventions & Patterns
 
@@ -63,16 +72,16 @@ The system follows a two-layer architecture: an **MCP layer** (`ContextManager.M
 - Prefer `record` for immutable/DTO types, `class` for behavioral types.
 
 **Code style**
-- C# 12 on .NET 8. `Nullable` and `ImplicitUsings` enabled project-wide — keep them on.
+- C# 12 on .NET 10. `Nullable` and `ImplicitUsings` enabled project-wide — keep them on.
 - Use `var` when the RHS makes the type obvious; use the explicit type otherwise.
 - No XML doc comments on internal APIs. Public MCP tool handlers get them.
 - Comments only for non-obvious *why*, never for *what*.
 - Favor pattern matching and LINQ over manual loops when clarity wins.
 
 **Testing**
-- Test files mirror the source structure under `tests/ContextManager.Analysis.Tests/`.
-- Extraction logic is tested against real `.cs` fixture files in `tests/ContextManager.Analysis.Tests/Fixtures/` — not mocked syntax trees.
-- Every extractor or analyzer change requires a fixture-backed MSTest.
+- Test files mirror the source structure under `tests/ContextManager.Analysis.Tests/` (`Extraction/`, `Graph/`, `Tools/`, root-level analyzer tests).
+- Extraction logic is tested against real `.cs` fixture files in `tests/ContextManager.Analysis.Tests/Fixtures/` (with `ContextFixtures/` and `GraphFixtures/` subfolders) — not mocked syntax trees. Graph-store tests may build stores programmatically.
+- Every extractor, analyzer, or graph change requires a fixture-backed MSTest.
 
 ## How to Add a Feature
 

@@ -36,7 +36,7 @@ public class CrossReferenceResolver
 
             foreach (var typeDecl in typeDeclarations)
             {
-                var typeName = typeDecl.Identifier.ValueText;
+                var typeName = MemberExtractor.RenderTypeName(typeDecl);
                 if (!typeSet.ContainsKey(typeName))
                     continue;
 
@@ -56,45 +56,23 @@ public class CrossReferenceResolver
                             ? "base"
                             : "implements";
 
-                        AddReference(typeName, toName, via, resolvedFile,
+                        AddReference(typeName, toName, via, resolvedFile, IsMetadataResolved(symbol),
                             seen, references, unresolvedSeen, unresolved);
                     }
                 }
 
-                // --- constructor dependencies ---
-                // Records: primary constructor parameters
-                if (typeDecl is RecordDeclarationSyntax record && record.ParameterList is not null)
+                // --- constructor dependencies (primary ctor first, fallback declared ctor) ---
+                var ctorParameters = ConstructorParameterLocator.Locate(typeDecl);
+                if (ctorParameters is not null)
                 {
-                    foreach (var param in record.ParameterList.Parameters)
+                    foreach (var param in ctorParameters.Value)
                     {
                         if (param.Type is null) continue;
                         var symbol = model.GetTypeInfo(param.Type, ct).Type;
                         var toName = param.Type.ToString();
                         var resolvedFile = ResolveFile(symbol, inputPaths);
-                        AddReference(typeName, toName, "constructor", resolvedFile,
+                        AddReference(typeName, toName, "constructor", resolvedFile, IsMetadataResolved(symbol),
                             seen, references, unresolvedSeen, unresolved);
-                    }
-                }
-                else
-                {
-                    // Classes/structs: pick constructor with most parameters
-                    var ctors = typeDecl.Members
-                        .OfType<ConstructorDeclarationSyntax>()
-                        .Where(c => !c.Modifiers.Any(m => m.ValueText == "static"))
-                        .ToList();
-
-                    if (ctors.Count > 0)
-                    {
-                        var chosen = ctors.MaxBy(c => c.ParameterList.Parameters.Count)!;
-                        foreach (var param in chosen.ParameterList.Parameters)
-                        {
-                            if (param.Type is null) continue;
-                            var symbol = model.GetTypeInfo(param.Type, ct).Type;
-                            var toName = param.Type.ToString();
-                            var resolvedFile = ResolveFile(symbol, inputPaths);
-                            AddReference(typeName, toName, "constructor", resolvedFile,
-                                seen, references, unresolvedSeen, unresolved);
-                        }
                     }
                 }
 
@@ -118,7 +96,7 @@ public class CrossReferenceResolver
                         var symbol = model.GetTypeInfo(param.Type, ct).Type;
                         var toName = param.Type.ToString();
                         var resolvedFile = ResolveFile(symbol, inputPaths);
-                        AddReference(typeName, toName, "parameter", resolvedFile,
+                        AddReference(typeName, toName, "parameter", resolvedFile, IsMetadataResolved(symbol),
                             seen, references, unresolvedSeen, unresolved);
                     }
                 }
@@ -146,6 +124,7 @@ public class CrossReferenceResolver
         string to,
         string via,
         string? resolvedFile,
+        bool metadataResolved,
         HashSet<(string, string, string)> seen,
         List<ReferenceInfo> references,
         HashSet<string> unresolvedSeen,
@@ -157,8 +136,37 @@ public class CrossReferenceResolver
 
         references.Add(new ReferenceInfo(from, to, via, resolvedFile));
 
-        if (resolvedFile is null && unresolvedSeen.Add(to))
+        // Types that resolved to metadata (BCL/external assemblies) are known quantities —
+        // unresolved is reserved for user types missing from the input set.
+        if (resolvedFile is null && !metadataResolved && unresolvedSeen.Add(to))
             unresolved.Add(to);
+    }
+
+    // True when the symbol resolved to a metadata (BCL/external) declaration: non-error,
+    // with no declaring syntax anywhere — including the open generic definition and array
+    // element types. User types outside the input set stay error/source symbols and remain
+    // in unresolved, which is that list's entire purpose.
+    private static bool IsMetadataResolved(ITypeSymbol? symbol)
+    {
+        if (symbol is null)
+            return false;
+
+        if (symbol is IArrayTypeSymbol array)
+            return IsMetadataResolved(array.ElementType);
+
+        if (symbol.TypeKind == TypeKind.Error)
+            return false;
+
+        if (symbol is INamedTypeSymbol named)
+        {
+            if (named.IsGenericType && named.TypeArguments.Any(a => a.TypeKind == TypeKind.Error))
+                return false;
+
+            return named.DeclaringSyntaxReferences.IsEmpty &&
+                   named.OriginalDefinition.DeclaringSyntaxReferences.IsEmpty;
+        }
+
+        return symbol.DeclaringSyntaxReferences.IsEmpty;
     }
 
     // Strip generic type arguments for comparison (e.g. "List<T>" → "List")

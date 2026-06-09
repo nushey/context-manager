@@ -126,6 +126,20 @@ public class MemberExtractorTests
         Assert.IsTrue(result.Properties.Any(p => p.Name == "OrderCount"));
     }
 
+    [TestMethod]
+    public void Class_PrimaryConstructor_PopulatesConstructorDependencies()
+    {
+        var node = ParseFromFixture(@"Fixtures/PrimaryCtorService.cs");
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.IsNotNull(result.ConstructorDependencies);
+        Assert.AreEqual(2, result.ConstructorDependencies!.Count);
+        Assert.AreEqual("IOrderRepository", result.ConstructorDependencies[0].Type);
+        Assert.AreEqual("orderRepository", result.ConstructorDependencies[0].Name);
+        Assert.AreEqual("IEventBus", result.ConstructorDependencies[1].Type);
+        Assert.AreEqual("eventBus", result.ConstructorDependencies[1].Name);
+    }
+
     // ── Public const and static readonly fields ───────────────────────────────
 
     [TestMethod]
@@ -358,7 +372,51 @@ public class MemberExtractorTests
         Assert.AreEqual("Total", result.ConstructorDependencies[1].Name);
     }
 
+    // ── Static / abstract classes ─────────────────────────────────────────────
+
+    [TestMethod]
+    public void StaticClass_KindIsStaticClass()
+    {
+        var node = ParseFromFixture(@"Fixtures/ServiceFactoryInjector.cs");
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.AreEqual("static-class", result.Kind);
+    }
+
+    [TestMethod]
+    public void StaticClass_WithDtoSuffix_StillStaticClass()
+    {
+        var snippet = """
+            static class MapperModel {
+                public static void Map(object source) {}
+            }
+            """;
+        var node = ParseFirstType(snippet);
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.AreEqual("static-class", result.Kind);
+    }
+
+    [TestMethod]
+    public void AbstractClass_KindIsAbstractClass()
+    {
+        var node = ParseFromFixture(@"Fixtures/AbstractOrderProcessor.cs");
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.AreEqual("abstract-class", result.Kind);
+    }
+
     // ── DTO ───────────────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Dto_AutoPropertiesFixture_KindStaysDto()
+    {
+        // Regression: real DTOs must keep classifying as dto after the static/zero-property fixes.
+        var node = ParseFromFixture(@"Fixtures/DtoByAutoProperties.cs");
+        var result = MemberExtractor.Build(node, isTopLevel: true);
+
+        Assert.AreEqual("dto", result.Kind);
+    }
 
     [TestMethod]
     public void Dto_SuffixMatch_KindIsDto()

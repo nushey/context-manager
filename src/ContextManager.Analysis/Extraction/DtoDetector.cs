@@ -11,6 +11,10 @@ public static class DtoDetector
 
     public static bool IsDto(TypeDeclarationSyntax node, string name)
     {
+        // Static classes are behavior containers — never DTOs, regardless of suffix.
+        if (node.Modifiers.Any(m => m.ValueText == "static"))
+            return false;
+
         // Behavioral types (inherits or implements) are never DTOs
         if (node.BaseList is not null && node.BaseList.Types.Count > 0)
             return false;
@@ -19,16 +23,16 @@ public static class DtoDetector
         if (!node.Members.OfType<MethodDeclarationSyntax>().Any())
             return true;
 
-        // Branch (b): no parameterized constructor AND every property is an auto-property
+        // Branch (b): no parameterized constructor AND at least one property, all auto-properties
         bool hasParameterizedCtor = node.Members
             .OfType<ConstructorDeclarationSyntax>()
             .Any(c => c.ParameterList.Parameters.Count > 0);
 
         if (!hasParameterizedCtor)
         {
-            bool allAutoProperties = node.Members
-                .OfType<PropertyDeclarationSyntax>()
-                .All(p => p.AccessorList is not null &&
+            var properties = node.Members.OfType<PropertyDeclarationSyntax>().ToList();
+            bool allAutoProperties = properties.Count > 0 &&
+                properties.All(p => p.AccessorList is not null &&
                           p.AccessorList.Accessors.All(a => a.Body == null && a.ExpressionBody == null));
 
             if (allAutoProperties)

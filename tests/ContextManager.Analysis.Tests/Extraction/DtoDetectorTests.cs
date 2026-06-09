@@ -105,6 +105,35 @@ public class DtoDetectorTests
     }
 
     [TestMethod]
+    public void StaticClass_ReturnsFalse()
+    {
+        var node = ParseFirstType("static class ServiceFactoryInjector { public static void AddServices(object s) {} }");
+        Assert.IsFalse(DtoDetector.IsDto(node, "ServiceFactoryInjector"));
+    }
+
+    [TestMethod]
+    public void StaticClassWithDtoSuffix_ReturnsFalse()
+    {
+        // The static check wins over the suffix heuristic.
+        var node = ParseFirstType("static class MapperModel { public static void Map(object s) {} }");
+        Assert.IsFalse(DtoDetector.IsDto(node, "MapperModel"));
+    }
+
+    [TestMethod]
+    public void BranchB_MethodsAndZeroProperties_ReturnsFalse()
+    {
+        // Regression: zero properties made All() vacuously true → false dto positive.
+        var snippet = """
+            class OrderDispatcher {
+                public void Dispatch() {}
+                public void Cancel() {}
+            }
+            """;
+        var node = ParseFirstType(snippet);
+        Assert.IsFalse(DtoDetector.IsDto(node, "OrderDispatcher"));
+    }
+
+    [TestMethod]
     public void ClassWithBaseClass_ReturnsFalse()
     {
         var node = ParseFirstType("class AdmPermisos : ApiControllerBase { public int X { get; set; } }");

@@ -86,6 +86,26 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_PrimaryCtorClass_ConstructorReferenceResolved()
+    {
+        var orderAuditorPath = FixturePath("OrderAuditor.cs");
+        var paths = new[] { IOrderRepositoryPath, orderAuditorPath };
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync(paths);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.From == "OrderAuditor" &&
+            r.To == "IOrderRepository" &&
+            r.Via == "constructor");
+
+        Assert.IsNotNull(reference, "Expected reference: OrderAuditor depends on IOrderRepository via primary constructor");
+        Assert.IsNotNull(reference.ResolvedFile, "ResolvedFile should be set for IOrderRepository (it's in the set)");
+        Assert.IsTrue(
+            string.Equals(reference.ResolvedFile, IOrderRepositoryPath, StringComparison.OrdinalIgnoreCase),
+            $"ResolvedFile should be the IOrderRepository fixture path, got: {reference.ResolvedFile}");
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_MethodsAreStrings_NotObjects()
     {
         var analyzer = CreateAnalyzer();
@@ -161,7 +181,7 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
-    public async Task AnalyzeAsync_MethodParameterBclType_ViaParameterAndInUnresolved()
+    public async Task AnalyzeAsync_MethodParameterBclType_ViaParameterButNotUnresolved()
     {
         var analyzer = CreateAnalyzer();
         var result = await analyzer.AnalyzeAsync(ThreeFilePaths);
@@ -172,8 +192,48 @@ public class ContextAnalyzerTests
 
         Assert.IsNotNull(reference, "Expected a reference with Via == \"parameter\" and To == \"CancellationToken\"");
         Assert.IsNull(reference.ResolvedFile, "CancellationToken is a BCL type — ResolvedFile must be null");
-        Assert.IsTrue(
+        Assert.IsFalse(
             result.Unresolved.Contains("CancellationToken", StringComparer.Ordinal),
-            $"Expected 'CancellationToken' in Unresolved (BCL type). Got: [{string.Join(", ", result.Unresolved)}]");
+            $"BCL types resolve to metadata and must stay out of Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_GenericType_ImplementsReferenceStillResolved()
+    {
+        var cachePath = FixturePath("ICache.cs");
+        var memoryCachePath = FixturePath("MemoryCache.cs");
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync([cachePath, memoryCachePath]);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.From == "MemoryCache<TItem>" &&
+            r.To == "ICache<TItem>" &&
+            r.Via == "implements");
+
+        Assert.IsNotNull(reference,
+            $"Expected reference: MemoryCache<TItem> implements ICache<TItem>. Got: [{string.Join("; ", result.References.Select(r => $"{r.From}->{r.To}:{r.Via}"))}]");
+        Assert.IsNotNull(reference.ResolvedFile, "ResolvedFile should be set for ICache (it's in the set)");
+        Assert.IsTrue(
+            string.Equals(reference.ResolvedFile, cachePath, StringComparison.OrdinalIgnoreCase),
+            $"ResolvedFile should be the ICache fixture path, got: {reference.ResolvedFile}");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_BclTypes_ExcludedFromUnresolved_UnknownUserTypeRemains()
+    {
+        var bclHeavyServicePath = FixturePath("BclHeavyService.cs");
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync([bclHeavyServicePath]);
+
+        foreach (var bcl in new[] { "string", "int?", "Task<string>", "List<string>", "bool" })
+        {
+            Assert.IsFalse(
+                result.Unresolved.Contains(bcl, StringComparer.Ordinal),
+                $"BCL type '{bcl}' must not appear in Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
+        }
+
+        Assert.IsTrue(
+            result.Unresolved.Contains("UnknownPolicy", StringComparer.Ordinal),
+            $"Genuinely unknown user type must stay in Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
     }
 }
