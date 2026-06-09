@@ -7,13 +7,13 @@ An MCP (Model Context Protocol) server that extracts structural contracts from C
 Reading a 1 500-line C# file costs an agent thousands of tokens on every call. ContextManager solves this at two levels:
 
 **Inspection** — turn a file into a compact JSON contract (tens of tokens) that tells the agent:
-- What types exist and their kind (`class`, `record`, `interface`, `enum`, `dto`)
-- The full public API surface — methods with return types, parameters, and decorators
+- What types exist and their kind (`class`, `static-class`, `abstract-class`, `record`, `struct`, `interface`, `enum`, `delegate`, `dto`)
+- The full public API surface — methods with return types, parameters, modifiers (`async`, `static`, `override`, …), and decorators; explicit interface implementations included with their qualified name (`IFoo.Bar`)
 - Exact `startLine`/`endLine` for each method, so the agent can read only the body it needs
-- Constructor dependencies (the DI graph)
-- Base classes and interfaces
+- Constructor dependencies (the DI graph) — including C# 12 primary constructors
+- Base classes, interfaces, and public events
 - All `using` directives (the import map)
-- `partial` class detection, `required` property flags, and generic method constraints
+- `partial` class detection, `required` property flags, property accessor detail (`get; private set;`), and generic constraints at both type and method level (generic type names rendered with their parameters: `Repository<TEntity>`)
 
 **Navigation** — build a Directed Property Graph of the entire solution so the agent knows *which* files to inspect before reading anything:
 - Scan once, query forever
@@ -34,7 +34,7 @@ Reading a 1 500-line C# file costs an agent thousands of tokens on every call. C
 | Tool | Description |
 |------|-------------|
 | `project_scan` | Scans a `.sln`, builds the knowledge graph from all C# source files, and persists it to `<solution-root>/.context-manager/graph.json` |
-| `graph_get_dependencies` | Returns immediate neighbors of a node (all incoming and outgoing edges) as compressed node contracts |
+| `graph_get_dependencies` | Returns the neighbors of a node aggregated at type granularity — member-level edges roll up to the declaring type, one entry per neighbor and direction with per-edge-kind counts (`edgeKinds`) |
 | `graph_impact_analysis` | BFS backward from a node — returns every node that directly or transitively depends on it |
 | `graph_path_find` | Returns the directed shortest path between two nodes as an ordered list of node IDs |
 
@@ -141,14 +141,18 @@ The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in mem
 
 **`graph_get_dependencies`** — who are the immediate neighbors of a node?
 
+Results are aggregated at type granularity: edges that land on a type's methods or properties roll up to the declaring type, with one entry per neighbor and direction. `edgeKinds` counts how many edges of each kind connect the two nodes, and `direction` tells you which way they point (`in` = the neighbor depends on the queried node, `out` = the queried node depends on the neighbor). The queried type's own members are never listed — `inspect_file` is the canonical source for those.
+
 ```json
 // graph_get_dependencies("MyApp.Orders.OrderService")
 [
-  { "id": "MyApp.Api.OrdersController",          "kind": "Class" },
-  { "id": "MyApp.Orders.IOrderRepository",       "kind": "Interface" },
-  { "id": "MyApp.Orders.IEventBus",              "kind": "Interface" }
+  { "id": "MyApp.Orders.IOrderRepository", "kind": "Interface", "direction": "out", "edgeKinds": { "INJECTS": 1, "CALLS": 3 } },
+  { "id": "MyApp.Orders.IEventBus",        "kind": "Interface", "direction": "out", "edgeKinds": { "INJECTS": 1 } },
+  { "id": "MyApp.Api.OrdersController",    "kind": "Class",     "direction": "in",  "edgeKinds": { "CALLS": 2, "REFERENCES": 1 } }
 ]
 ```
+
+This works even for types consumed only through static method calls — the callers of each method roll up to the type, so a static helper shows its real consumers instead of an empty list.
 
 **`graph_impact_analysis`** — how critical is this node? What is the blast radius of a change?
 
@@ -177,7 +181,7 @@ A short list means the change is contained. A long list means the node's public 
 
 ### Step 3 — Inspect only what matters
 
-Use the `file` paths from `graph_get_dependencies` results to call `inspect_file` on the files you actually need to understand. The graph tells you where to look; the inspection tools tell you what's there.
+Use the node IDs from `graph_get_dependencies` results to locate and `inspect_file` the files you actually need to understand. The graph tells you where to look; the inspection tools tell you what's there.
 
 ### Configuring your agent
 
@@ -229,7 +233,7 @@ Use the exact string returned by `graph_get_dependencies` or `graph_impact_analy
 
 ### `inspect_file`
 
-The example below is derived from `ModernCSharpFeatures.cs` and shows the new fields (`isPartial`, `isRequired`, `genericConstraints`):
+The example below is derived from `ModernCSharpFeatures.cs` and shows the detail fields (`isPartial`, `isRequired`, `accessors`, `genericConstraints`):
 
 ```json
 {
@@ -258,7 +262,7 @@ The example below is derived from `ModernCSharpFeatures.cs` and shows the new fi
         }
       ],
       "properties": [
-        { "name": "CustomerName", "type": "string?", "access": "public" }
+        { "name": "CustomerName", "type": "string?", "access": "public", "accessors": "get; set;" }
       ]
     },
     {
@@ -279,9 +283,9 @@ The example below is derived from `ModernCSharpFeatures.cs` and shows the new fi
         }
       ],
       "properties": [
-        { "name": "Email",       "type": "string",  "access": "public", "isRequired": true },
-        { "name": "FullName",    "type": "string",  "access": "public", "isRequired": true },
-        { "name": "PhoneNumber", "type": "string?", "access": "public" }
+        { "name": "Email",       "type": "string",  "access": "public", "isRequired": true, "accessors": "get; set;" },
+        { "name": "FullName",    "type": "string",  "access": "public", "isRequired": true, "accessors": "get; set;" },
+        { "name": "PhoneNumber", "type": "string?", "access": "public", "accessors": "get; set;" }
       ]
     },
     {
@@ -298,7 +302,7 @@ The example below is derived from `ModernCSharpFeatures.cs` and shows the new fi
           "parameters": [
             { "type": "object", "name": "input" }
           ],
-          "genericConstraints": ["T : class, new()"]
+          "genericConstraints": ["where T : class, new()"]
         },
         {
           "name": "Map",
@@ -309,7 +313,7 @@ The example below is derived from `ModernCSharpFeatures.cs` and shows the new fi
           "parameters": [
             { "type": "TSource", "name": "source" }
           ],
-          "genericConstraints": ["TSource : notnull", "TResult : class"]
+          "genericConstraints": ["where TSource : notnull", "where TResult : class"]
         }
       ]
     },
@@ -336,7 +340,7 @@ The example below is a representative output matching the `ContextAnalysis` mode
   "files": [
     {
       "file": "OrderService.cs",
-      "namespace": "Zureo.Orders",
+      "namespace": "MyApp.Orders",
       "types": [
         {
           "name": "OrderService",
@@ -351,7 +355,7 @@ The example below is a representative output matching the `ContextAnalysis` mode
     },
     {
       "file": "IOrderRepository.cs",
-      "namespace": "Zureo.Orders",
+      "namespace": "MyApp.Orders",
       "types": [
         {
           "name": "IOrderRepository",
@@ -376,6 +380,8 @@ The example below is a representative output matching the `ContextAnalysis` mode
   "unresolved": ["IOrderService"]
 }
 ```
+
+`unresolved` lists only user-defined types missing from the input set — BCL/framework types (`Task`, `CancellationToken`, `string`, …) are resolved against framework metadata and excluded. The output is intentionally compressed (methods as one-line strings, no properties, no line numbers): use `inspect_file` when you need full member detail.
 
 ## Build & test
 

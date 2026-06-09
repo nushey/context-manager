@@ -141,6 +141,22 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
+    public void Analyze_PrimaryCtorClass_ConstructorDependencies()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("PrimaryCtorService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "PrimaryCtorService");
+        Assert.IsNotNull(type.ConstructorDependencies);
+        Assert.AreEqual(2, type.ConstructorDependencies!.Count);
+        Assert.AreEqual("IOrderRepository", type.ConstructorDependencies[0].Type);
+        Assert.AreEqual("orderRepository", type.ConstructorDependencies[0].Name);
+        Assert.AreEqual("IEventBus", type.ConstructorDependencies[1].Type);
+        Assert.AreEqual("eventBus", type.ConstructorDependencies[1].Name);
+    }
+
+    [TestMethod]
     public void Analyze_ServiceWithDependencies_MethodAttributes()
     {
         var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
@@ -353,6 +369,222 @@ public class FileAnalyzerTests
         var analysis = (FileAnalysis)result;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRequest");
         Assert.IsNull(type.Properties);
+    }
+
+    // ── Generic types: name with type parameters + type-level constraints ────
+
+    [TestMethod]
+    public void Analyze_GenericClass_NameIncludesTypeParameters()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        Assert.IsTrue(analysis.Types.Any(t => t.Name == "GenericRepository<TEntity>"),
+            $"Expected 'GenericRepository<TEntity>'. Got: [{string.Join(", ", analysis.Types.Select(t => t.Name))}]");
+        Assert.IsTrue(analysis.Types.Any(t => t.Name == "IRepository<TEntity>"));
+    }
+
+    [TestMethod]
+    public void Analyze_GenericClass_TypeLevelGenericConstraints()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "GenericRepository<TEntity>");
+        Assert.IsNotNull(type.GenericConstraints);
+        Assert.AreEqual(1, type.GenericConstraints!.Count);
+        Assert.AreEqual("where TEntity : class, IEntity, new()", type.GenericConstraints[0]);
+    }
+
+    [TestMethod]
+    public void Analyze_GenericClass_MultipleConstraintClausesInDeclarationOrder()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EntityMapper<TSource, TResult>");
+        Assert.IsNotNull(type.GenericConstraints);
+        Assert.AreEqual(2, type.GenericConstraints!.Count);
+        Assert.AreEqual("where TSource : notnull", type.GenericConstraints[0]);
+        Assert.AreEqual("where TResult : class", type.GenericConstraints[1]);
+    }
+
+    [TestMethod]
+    public void Analyze_NonGenericType_NameUnchangedAndConstraintsNull()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
+        Assert.IsNull(type.GenericConstraints);
+    }
+
+    [TestMethod]
+    public void Analyze_GenericDtoSuffix_BareIdentifierDrivesDtoHeuristic()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "PagedResponse<T>");
+        Assert.AreEqual("dto", type.Kind);
+    }
+
+    // ── Method modifiers + property accessors ─────────────────────────────────
+
+    private static TypeInfo AnalyzeMemberDetailShowcase()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("MemberDetailShowcase.cs"), CancellationToken.None);
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        return ((FileAnalysis)result).Types.First(t => t.Name == "MemberDetailShowcase");
+    }
+
+    [TestMethod]
+    public void Analyze_MethodModifiers_NonAccessModifiersInDeclarationOrder()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        CollectionAssert.AreEqual(new[] { "async" },
+            type.Methods!.First(m => m.Name == "LoadAsync").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "static", "async" },
+            type.Methods!.First(m => m.Name == "CountAsync").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "override" },
+            type.Methods!.First(m => m.Name == "ToString").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "virtual" },
+            type.Methods!.First(m => m.Name == "Extend").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "abstract" },
+            type.Methods!.First(m => m.Name == "MustImplement").Modifiers!.ToArray());
+    }
+
+    [TestMethod]
+    public void Analyze_MethodWithoutNonAccessModifiers_ModifiersNull()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.IsNull(type.Methods!.First(m => m.Name == "Plain").Modifiers);
+    }
+
+    [TestMethod]
+    public void Analyze_PropertyAccessors_RenderedInCSharpSyntax()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.AreEqual("get; set;", type.Properties!.First(p => p.Name == "GetSet").Accessors);
+        Assert.AreEqual("get; init;", type.Properties!.First(p => p.Name == "GetInit").Accessors);
+        Assert.AreEqual("get; private set;", type.Properties!.First(p => p.Name == "GetPrivateSet").Accessors);
+    }
+
+    [TestMethod]
+    public void Analyze_ExpressionBodiedProperty_AccessorsIsGetOnly()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.AreEqual("get;", type.Properties!.First(p => p.Name == "ExpressionBodied").Accessors);
+    }
+
+    // ── Explicit interface implementations ────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_ExplicitInterfaceMethod_QualifiedNameAndPublicAccess()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        var method = type.Methods!.FirstOrDefault(m => m.Name == "IAuditable.Audit");
+        Assert.IsNotNull(method,
+            $"Expected explicit implementation 'IAuditable.Audit'. Got: [{string.Join(", ", type.Methods!.Select(m => m.Name))}]");
+        Assert.AreEqual("public", method.Access);
+    }
+
+    [TestMethod]
+    public void Analyze_ExplicitInterfaceProperty_QualifiedNameAndPublicAccess()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        var prop = type.Properties!.FirstOrDefault(p => p.Name == "IAuditable.AuditLabel");
+        Assert.IsNotNull(prop,
+            $"Expected explicit implementation 'IAuditable.AuditLabel'. Got: [{string.Join(", ", type.Properties!.Select(p => p.Name))}]");
+        Assert.AreEqual("public", prop.Access);
+        Assert.AreEqual("get;", prop.Accessors);
+    }
+
+    // ── Base-vs-interface heuristic ───────────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_IPlusLowercaseBaseType_ReportedAsBaseNotImplements()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("IndexManagerCache.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "IndexManagerCache");
+        Assert.AreEqual("IndexManager", type.Base);
+        Assert.IsNull(type.Implements);
+    }
+
+    [TestMethod]
+    public void Analyze_IPlusUppercaseFirstEntry_StillImplements()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
+        Assert.IsNull(type.Base);
+        CollectionAssert.AreEqual(new[] { "IAuditable" }, type.Implements!.ToArray());
+    }
+
+    // ── Public events ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_PublicEvents_FieldAndAccessorFormsInDeclarationOrder()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EventPublisher");
+        Assert.IsNotNull(type.Events);
+        CollectionAssert.AreEqual(
+            new[] { "Started", "Progressed", "Completed", "Custom" },
+            type.Events!.Select(e => e.Name).ToArray());
+        Assert.AreEqual("EventHandler?", type.Events[0].Type);
+        Assert.AreEqual("EventHandler<string>?", type.Events[1].Type);
+        Assert.AreEqual("EventHandler<string>?", type.Events[2].Type);
+        Assert.AreEqual("EventHandler?", type.Events[3].Type);
+        Assert.IsTrue(type.Events.All(e => e.Access == "public"));
+        Assert.IsTrue(type.Events.All(e => e.Accessors is null));
+    }
+
+    [TestMethod]
+    public void Analyze_PrivateEvent_Excluded()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EventPublisher");
+        Assert.IsFalse(type.Events!.Any(e => e.Name == "InternalOnly"));
+    }
+
+    [TestMethod]
+    public void Analyze_TypeWithoutEvents_EventsIsNull()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
+        Assert.IsNull(type.Events);
     }
 
     // ── File metadata ─────────────────────────────────────────────────────────

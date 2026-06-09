@@ -1,11 +1,23 @@
 using ContextManager.Analysis.Extraction;
 using ContextManager.Analysis.Models;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
 namespace ContextManager.Analysis;
 
 public class ContextAnalyzer
 {
+    // BCL metadata references built once per process from the runtime's trusted platform
+    // assemblies. Without them the compilation resolves nothing — every predefined/BCL type
+    // becomes an error symbol and pollutes the unresolved list.
+    private static readonly Lazy<IReadOnlyList<MetadataReference>> BclReferences = new(() =>
+        AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string tpa
+            ? tpa.Split(Path.PathSeparator)
+                 .Where(File.Exists)
+                 .Select(p => (MetadataReference)MetadataReference.CreateFromFile(p))
+                 .ToList()
+            : (IReadOnlyList<MetadataReference>)[]);
+
     private readonly CrossReferenceResolver _resolver;
 
     public ContextAnalyzer(CrossReferenceResolver resolver)
@@ -33,7 +45,8 @@ public class ContextAnalyzer
 
         var compilation = CSharpCompilation.Create(
             assemblyName: "ContextAnalysis",
-            syntaxTrees: treeByPath.Values);
+            syntaxTrees: treeByPath.Values,
+            references: BclReferences.Value);
 
         var files = new List<ContextFileAnalysis>(filePaths.Count);
 
