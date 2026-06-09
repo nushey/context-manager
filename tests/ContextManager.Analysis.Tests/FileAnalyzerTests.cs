@@ -371,6 +371,69 @@ public class FileAnalyzerTests
         Assert.IsNull(type.Properties);
     }
 
+    // ── Generic types: name with type parameters + type-level constraints ────
+
+    [TestMethod]
+    public void Analyze_GenericClass_NameIncludesTypeParameters()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        Assert.IsTrue(analysis.Types.Any(t => t.Name == "GenericRepository<TEntity>"),
+            $"Expected 'GenericRepository<TEntity>'. Got: [{string.Join(", ", analysis.Types.Select(t => t.Name))}]");
+        Assert.IsTrue(analysis.Types.Any(t => t.Name == "IRepository<TEntity>"));
+    }
+
+    [TestMethod]
+    public void Analyze_GenericClass_TypeLevelGenericConstraints()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "GenericRepository<TEntity>");
+        Assert.IsNotNull(type.GenericConstraints);
+        Assert.AreEqual(1, type.GenericConstraints!.Count);
+        Assert.AreEqual("where TEntity : class, IEntity, new()", type.GenericConstraints[0]);
+    }
+
+    [TestMethod]
+    public void Analyze_GenericClass_MultipleConstraintClausesInDeclarationOrder()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EntityMapper<TSource, TResult>");
+        Assert.IsNotNull(type.GenericConstraints);
+        Assert.AreEqual(2, type.GenericConstraints!.Count);
+        Assert.AreEqual("where TSource : notnull", type.GenericConstraints[0]);
+        Assert.AreEqual("where TResult : class", type.GenericConstraints[1]);
+    }
+
+    [TestMethod]
+    public void Analyze_NonGenericType_NameUnchangedAndConstraintsNull()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
+        Assert.IsNull(type.GenericConstraints);
+    }
+
+    [TestMethod]
+    public void Analyze_GenericDtoSuffix_BareIdentifierDrivesDtoHeuristic()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "PagedResponse<T>");
+        Assert.AreEqual("dto", type.Kind);
+    }
+
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [TestMethod]

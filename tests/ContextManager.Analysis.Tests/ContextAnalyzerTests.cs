@@ -198,6 +198,27 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_GenericType_ImplementsReferenceStillResolved()
+    {
+        var cachePath = FixturePath("ICache.cs");
+        var memoryCachePath = FixturePath("MemoryCache.cs");
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync([cachePath, memoryCachePath]);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.From == "MemoryCache<TItem>" &&
+            r.To == "ICache<TItem>" &&
+            r.Via == "implements");
+
+        Assert.IsNotNull(reference,
+            $"Expected reference: MemoryCache<TItem> implements ICache<TItem>. Got: [{string.Join("; ", result.References.Select(r => $"{r.From}->{r.To}:{r.Via}"))}]");
+        Assert.IsNotNull(reference.ResolvedFile, "ResolvedFile should be set for ICache (it's in the set)");
+        Assert.IsTrue(
+            string.Equals(reference.ResolvedFile, cachePath, StringComparison.OrdinalIgnoreCase),
+            $"ResolvedFile should be the ICache fixture path, got: {reference.ResolvedFile}");
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_BclTypes_ExcludedFromUnresolved_UnknownUserTypeRemains()
     {
         var bclHeavyServicePath = FixturePath("BclHeavyService.cs");
