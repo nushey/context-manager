@@ -26,6 +26,8 @@ Use graph tools to navigate before you read. The starting point is always the fi
 | 3 | `inspect_file` on relevant neighbors | Read only what you actually need |
 | 4 | `graph_impact_analysis(namespace.TypeName)` | Assess blast radius before changing anything |
 
+**Reading `graph_get_dependencies` results:** entries are aggregated per neighbor type and direction. `direction: "in"` = the neighbor depends on the queried node; `direction: "out"` = the queried node depends on the neighbor. `edgeKinds` counts the edges per kind (`INJECTS`, `CALLS`, `REFERENCES`, `IMPLEMENTS`, …). The queried type's own members are never listed — use `inspect_file` for those.
+
 **`graph_impact_analysis` is a risk calibration tool — not a verification checklist.**
 - Few results → change is contained, proceed normally.
 - Many results → this type's public contract is load-bearing. Preserve it.
