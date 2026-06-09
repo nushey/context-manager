@@ -72,6 +72,8 @@ public static class MemberExtractor
             RecordDeclarationSyntax r when r.ClassOrStructKeyword.ValueText == "struct" => "record",
             RecordDeclarationSyntax => "record",
             StructDeclarationSyntax => "struct",
+            ClassDeclarationSyntax c when c.Modifiers.Any(m => m.ValueText == "static") => "static-class",
+            ClassDeclarationSyntax c when c.Modifiers.Any(m => m.ValueText == "abstract") => "abstract-class",
             _ => "class"
         };
 
@@ -81,8 +83,9 @@ public static class MemberExtractor
         var methods = NullIfEmpty(ExtractMethods(node));
         var properties = NullIfEmpty(ExtractProperties(node));
 
-        // Only apply DTO heuristic to classes and structs; records and interfaces keep their kind
-        if (node is ClassDeclarationSyntax or StructDeclarationSyntax && DtoDetector.IsDto(node, name))
+        // Only apply the DTO heuristic to plain classes and structs; records, interfaces,
+        // static and abstract classes keep their kind.
+        if (kind is "class" or "struct" && DtoDetector.IsDto(node, name))
         {
             kind = "dto";
             properties = null;
