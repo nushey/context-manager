@@ -45,28 +45,12 @@ public class EdgeExtractor
                 }
             }
 
-            // INJECTS edges — primary constructor (C# 12): params live on typeDecl.ParameterList
-            if (typeDecl.ParameterList is not null)
+            // INJECTS edges — primary constructor (C# 12) first, fallback to the declared
+            // constructor with most parameters, via the shared locator.
+            var ctorParameters = ConstructorParameterLocator.Locate(typeDecl);
+            if (ctorParameters is not null)
             {
-                foreach (var param in typeDecl.ParameterList.Parameters)
-                {
-                    if (param.Type is null) continue;
-                    EmitGenericAwareEdge(
-                        model.GetTypeInfo(param.Type, ct).Type,
-                        sourceNode, "INJECTS", seen, edges);
-                }
-            }
-
-            // INJECTS edges — explicit constructor: params live in ConstructorDeclarationSyntax.Members
-            var ctors = typeDecl.Members
-                .OfType<ConstructorDeclarationSyntax>()
-                .Where(c => !c.Modifiers.Any(m => m.ValueText == "static"))
-                .ToList();
-
-            if (ctors.Count > 0)
-            {
-                var chosen = ctors.MaxBy(c => c.ParameterList.Parameters.Count)!;
-                foreach (var param in chosen.ParameterList.Parameters)
+                foreach (var param in ctorParameters.Value)
                 {
                     if (param.Type is null) continue;
                     EmitGenericAwareEdge(

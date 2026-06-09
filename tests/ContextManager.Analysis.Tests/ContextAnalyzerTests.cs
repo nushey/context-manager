@@ -86,6 +86,26 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_PrimaryCtorClass_ConstructorReferenceResolved()
+    {
+        var orderAuditorPath = FixturePath("OrderAuditor.cs");
+        var paths = new[] { IOrderRepositoryPath, orderAuditorPath };
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync(paths);
+
+        var reference = result.References.FirstOrDefault(r =>
+            r.From == "OrderAuditor" &&
+            r.To == "IOrderRepository" &&
+            r.Via == "constructor");
+
+        Assert.IsNotNull(reference, "Expected reference: OrderAuditor depends on IOrderRepository via primary constructor");
+        Assert.IsNotNull(reference.ResolvedFile, "ResolvedFile should be set for IOrderRepository (it's in the set)");
+        Assert.IsTrue(
+            string.Equals(reference.ResolvedFile, IOrderRepositoryPath, StringComparison.OrdinalIgnoreCase),
+            $"ResolvedFile should be the IOrderRepository fixture path, got: {reference.ResolvedFile}");
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_MethodsAreStrings_NotObjects()
     {
         var analyzer = CreateAnalyzer();
