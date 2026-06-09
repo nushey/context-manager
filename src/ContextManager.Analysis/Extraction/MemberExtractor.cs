@@ -60,9 +60,15 @@ public static class MemberExtractor
     }
 
 
+    // Single rendering of a type's display name (identifier + type parameter list);
+    // CrossReferenceResolver must key its lookups with the exact same rendering.
+    public static string RenderTypeName(TypeDeclarationSyntax node)
+        => node.Identifier.ValueText + node.TypeParameterList?.ToString();
+
     public static TypeInfo Build(TypeDeclarationSyntax node, bool isTopLevel)
     {
-        var name = node.Identifier.ValueText;
+        var bareName = node.Identifier.ValueText;
+        var name = RenderTypeName(node);
         var access = AccessLevel.FromModifiers(node.Modifiers, isTopLevel);
         var attributes = AttributeExtractor.Render(node.AttributeLists);
 
@@ -82,10 +88,15 @@ public static class MemberExtractor
         var constructorDeps = NullIfEmpty(ExtractConstructorDependencies(node));
         var methods = NullIfEmpty(ExtractMethods(node));
         var properties = NullIfEmpty(ExtractProperties(node));
+        var genericConstraints = NullIfEmpty(
+            node.ConstraintClauses
+                .Select(c => c.ToString())
+                .ToList());
 
         // Only apply the DTO heuristic to plain classes and structs; records, interfaces,
-        // static and abstract classes keep their kind.
-        if (kind is "class" or "struct" && DtoDetector.IsDto(node, name))
+        // static and abstract classes keep their kind. Suffix matching needs the bare
+        // identifier — "PagedResponse<T>" must still end with "Response".
+        if (kind is "class" or "struct" && DtoDetector.IsDto(node, bareName))
         {
             kind = "dto";
             properties = null;
@@ -104,7 +115,8 @@ public static class MemberExtractor
             Methods: methods,
             Properties: properties,
             Members: null,
-            IsPartial: isPartial);
+            IsPartial: isPartial,
+            GenericConstraints: genericConstraints);
     }
 
     public static TypeInfo Build(RecordDeclarationSyntax node, bool isTopLevel)

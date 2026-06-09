@@ -36,7 +36,7 @@ public class CrossReferenceResolver
 
             foreach (var typeDecl in typeDeclarations)
             {
-                var typeName = typeDecl.Identifier.ValueText;
+                var typeName = MemberExtractor.RenderTypeName(typeDecl);
                 if (!typeSet.ContainsKey(typeName))
                     continue;
 
