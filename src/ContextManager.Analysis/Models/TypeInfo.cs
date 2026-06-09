@@ -12,4 +12,5 @@ public sealed record TypeInfo(
     IReadOnlyList<PropertyInfo>? Properties,
     IReadOnlyList<string>? Members,
     bool? IsPartial = null,
-    IReadOnlyList<string>? GenericConstraints = null);
+    IReadOnlyList<string>? GenericConstraints = null,
+    IReadOnlyList<PropertyInfo>? Events = null);

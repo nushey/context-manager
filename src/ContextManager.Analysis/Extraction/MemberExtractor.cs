@@ -88,6 +88,7 @@ public static class MemberExtractor
         var constructorDeps = NullIfEmpty(ExtractConstructorDependencies(node));
         var methods = NullIfEmpty(ExtractMethods(node));
         var properties = NullIfEmpty(ExtractProperties(node));
+        var events = NullIfEmpty(ExtractEvents(node));
         var genericConstraints = NullIfEmpty(
             node.ConstraintClauses
                 .Select(c => c.ToString())
@@ -116,7 +117,8 @@ public static class MemberExtractor
             Properties: properties,
             Members: null,
             IsPartial: isPartial,
-            GenericConstraints: genericConstraints);
+            GenericConstraints: genericConstraints,
+            Events: events);
     }
 
     public static TypeInfo Build(RecordDeclarationSyntax node, bool isTopLevel)
@@ -213,6 +215,54 @@ public static class MemberExtractor
     }
 
     private static IReadOnlyList<T>? NullIfEmpty<T>(IReadOnlyList<T> list) => list.Count == 0 ? null : list;
+
+    // EventFieldDeclarationSyntax is a MemberDeclarationSyntax, NOT a BasePropertyDeclarationSyntax,
+    // so field-style and accessor-style events are matched separately; a single pass over
+    // node.Members keeps both forms in declaration order.
+    private static IReadOnlyList<Models.PropertyInfo> ExtractEvents(TypeDeclarationSyntax node)
+    {
+        var result = new List<Models.PropertyInfo>();
+        bool isInterface = node is InterfaceDeclarationSyntax;
+
+        foreach (var member in node.Members)
+        {
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                var access = isInterface && !eventField.Modifiers.Any()
+                    ? "public"
+                    : AccessLevel.FromModifiers(eventField.Modifiers, isTopLevelType: false);
+                if (access == "private")
+                    continue;
+
+                var typeName = eventField.Declaration.Type.ToString();
+                foreach (var variable in eventField.Declaration.Variables)
+                {
+                    result.Add(new Models.PropertyInfo(
+                        Name: variable.Identifier.ValueText,
+                        Type: typeName,
+                        Access: access));
+                }
+            }
+            else if (member is EventDeclarationSyntax eventDecl)
+            {
+                var explicitSpecifier = eventDecl.ExplicitInterfaceSpecifier;
+                var access = explicitSpecifier is not null
+                    ? "public"
+                    : AccessLevel.FromModifiers(eventDecl.Modifiers, isTopLevelType: false);
+                if (access == "private")
+                    continue;
+
+                result.Add(new Models.PropertyInfo(
+                    Name: explicitSpecifier is not null
+                        ? $"{explicitSpecifier.Name}.{eventDecl.Identifier.ValueText}"
+                        : eventDecl.Identifier.ValueText,
+                    Type: eventDecl.Type.ToString(),
+                    Access: access));
+            }
+        }
+
+        return result;
+    }
 
     private static IReadOnlyList<string> ExtractNonAccessModifiers(Microsoft.CodeAnalysis.SyntaxTokenList modifiers)
         => modifiers
