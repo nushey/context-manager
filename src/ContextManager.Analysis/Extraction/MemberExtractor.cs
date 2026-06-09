@@ -185,6 +185,7 @@ public static class MemberExtractor
                 method.ConstraintClauses
                     .Select(c => c.ToString())
                     .ToList());
+            var modifiers = NullIfEmpty(ExtractNonAccessModifiers(method.Modifiers));
 
             result.Add(new Models.MethodInfo(
                 Name: method.Identifier.ValueText,
@@ -194,13 +195,37 @@ public static class MemberExtractor
                 EndLine: lineSpan.EndLinePosition.Line + 1,
                 Parameters: parameters,
                 Attributes: methodAttrs,
-                GenericConstraints: genericConstraints));
+                GenericConstraints: genericConstraints,
+                Modifiers: modifiers));
         }
 
         return result;
     }
 
     private static IReadOnlyList<T>? NullIfEmpty<T>(IReadOnlyList<T> list) => list.Count == 0 ? null : list;
+
+    private static IReadOnlyList<string> ExtractNonAccessModifiers(Microsoft.CodeAnalysis.SyntaxTokenList modifiers)
+        => modifiers
+            .Where(m => m.ValueText is not ("public" or "protected" or "internal" or "private"))
+            .Select(m => m.ValueText)
+            .ToList();
+
+    private static string? RenderAccessors(PropertyDeclarationSyntax prop)
+    {
+        if (prop.ExpressionBody is not null)
+            return "get;";
+
+        if (prop.AccessorList is null)
+            return null;
+
+        var rendered = prop.AccessorList.Accessors.Select(a =>
+        {
+            var mods = string.Join(" ", a.Modifiers.Select(m => m.ValueText));
+            return mods.Length > 0 ? $"{mods} {a.Keyword.ValueText};" : $"{a.Keyword.ValueText};";
+        });
+
+        return string.Join(" ", rendered);
+    }
 
     private static IReadOnlyList<Models.PropertyInfo> ExtractProperties(TypeDeclarationSyntax node)
     {
@@ -218,7 +243,8 @@ public static class MemberExtractor
                 Name: prop.Identifier.ValueText,
                 Type: prop.Type.ToString(),
                 Access: propAccess,
-                IsRequired: isRequired));
+                IsRequired: isRequired,
+                Accessors: RenderAccessors(prop)));
         }
 
         foreach (var field in node.Members.OfType<FieldDeclarationSyntax>())

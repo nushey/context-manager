@@ -434,6 +434,58 @@ public class FileAnalyzerTests
         Assert.AreEqual("dto", type.Kind);
     }
 
+    // ── Method modifiers + property accessors ─────────────────────────────────
+
+    private static TypeInfo AnalyzeMemberDetailShowcase()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("MemberDetailShowcase.cs"), CancellationToken.None);
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        return ((FileAnalysis)result).Types.First(t => t.Name == "MemberDetailShowcase");
+    }
+
+    [TestMethod]
+    public void Analyze_MethodModifiers_NonAccessModifiersInDeclarationOrder()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        CollectionAssert.AreEqual(new[] { "async" },
+            type.Methods!.First(m => m.Name == "LoadAsync").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "static", "async" },
+            type.Methods!.First(m => m.Name == "CountAsync").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "override" },
+            type.Methods!.First(m => m.Name == "ToString").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "virtual" },
+            type.Methods!.First(m => m.Name == "Extend").Modifiers!.ToArray());
+        CollectionAssert.AreEqual(new[] { "abstract" },
+            type.Methods!.First(m => m.Name == "MustImplement").Modifiers!.ToArray());
+    }
+
+    [TestMethod]
+    public void Analyze_MethodWithoutNonAccessModifiers_ModifiersNull()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.IsNull(type.Methods!.First(m => m.Name == "Plain").Modifiers);
+    }
+
+    [TestMethod]
+    public void Analyze_PropertyAccessors_RenderedInCSharpSyntax()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.AreEqual("get; set;", type.Properties!.First(p => p.Name == "GetSet").Accessors);
+        Assert.AreEqual("get; init;", type.Properties!.First(p => p.Name == "GetInit").Accessors);
+        Assert.AreEqual("get; private set;", type.Properties!.First(p => p.Name == "GetPrivateSet").Accessors);
+    }
+
+    [TestMethod]
+    public void Analyze_ExpressionBodiedProperty_AccessorsIsGetOnly()
+    {
+        var type = AnalyzeMemberDetailShowcase();
+
+        Assert.AreEqual("get;", type.Properties!.First(p => p.Name == "ExpressionBodied").Accessors);
+    }
+
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [TestMethod]
