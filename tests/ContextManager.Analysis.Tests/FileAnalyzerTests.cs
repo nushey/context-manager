@@ -543,6 +543,50 @@ public class FileAnalyzerTests
         CollectionAssert.AreEqual(new[] { "IAuditable" }, type.Implements!.ToArray());
     }
 
+    // ── Public events ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void Analyze_PublicEvents_FieldAndAccessorFormsInDeclarationOrder()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EventPublisher");
+        Assert.IsNotNull(type.Events);
+        CollectionAssert.AreEqual(
+            new[] { "Started", "Progressed", "Completed", "Custom" },
+            type.Events!.Select(e => e.Name).ToArray());
+        Assert.AreEqual("EventHandler?", type.Events[0].Type);
+        Assert.AreEqual("EventHandler<string>?", type.Events[1].Type);
+        Assert.AreEqual("EventHandler<string>?", type.Events[2].Type);
+        Assert.AreEqual("EventHandler?", type.Events[3].Type);
+        Assert.IsTrue(type.Events.All(e => e.Access == "public"));
+        Assert.IsTrue(type.Events.All(e => e.Accessors is null));
+    }
+
+    [TestMethod]
+    public void Analyze_PrivateEvent_Excluded()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "EventPublisher");
+        Assert.IsFalse(type.Events!.Any(e => e.Name == "InternalOnly"));
+    }
+
+    [TestMethod]
+    public void Analyze_TypeWithoutEvents_EventsIsNull()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
+        Assert.IsNull(type.Events);
+    }
+
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [TestMethod]
