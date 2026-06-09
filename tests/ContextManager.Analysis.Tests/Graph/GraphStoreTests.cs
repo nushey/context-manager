@@ -125,92 +125,171 @@ public class GraphStoreTests
         Assert.AreNotEqual(n1, n2);
     }
 
-    // ── GetNeighbors ─────────────────────────────────────────────────────────
+    // ── GetAggregatedNeighbors ───────────────────────────────────────────────
 
     [TestMethod]
-    public void GetNeighbors_NodeWithOutEdges_ReturnsTargetsWithEdgeMetadata()
+    public void GetAggregatedNeighbors_TypeNode_ReturnsOutEntriesWithEdgeKindCounts()
     {
         var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("A");
+        var neighbors = store.GetAggregatedNeighbors("A");
 
-        // A -> B (CALLS, out), A -> D (INJECTS, out) — out-edges in graph order
+        // A -> B (CALLS, out), A -> D (INJECTS, out) — out-entries in graph order
         Assert.AreEqual(2, neighbors.Count);
         Assert.AreEqual("B", neighbors[0].Id);
-        Assert.AreEqual("CALLS", neighbors[0].Type);
         Assert.AreEqual("out", neighbors[0].Direction);
+        Assert.AreEqual(1, neighbors[0].EdgeKinds["CALLS"]);
         Assert.AreEqual("D", neighbors[1].Id);
-        Assert.AreEqual("INJECTS", neighbors[1].Type);
         Assert.AreEqual("out", neighbors[1].Direction);
+        Assert.AreEqual(1, neighbors[1].EdgeKinds["INJECTS"]);
     }
 
     [TestMethod]
-    public void GetNeighbors_NodeWithInEdgesOnly_ReturnsSourcesWithEdgeMetadata()
+    public void GetAggregatedNeighbors_StaticHelperConsumers_RolledUpToCallerTypesAsInEntries()
     {
-        var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("C");
+        // Guard --CONTAINS--> Guard.Check
+        // ServiceA --CONTAINS--> ServiceA.Validate
+        // ServiceB --CONTAINS--> ServiceB.Process
+        // ServiceA.Validate --CALLS--> Guard.Check
+        // ServiceB.Process --CALLS--> Guard.Check
+        var store = new GraphStore();
+        var guard = new GraphNode("Guard", "Class");
+        var guardCheck = new GraphNode("Guard.Check", "Method");
+        var serviceA = new GraphNode("ServiceA", "Class");
+        var serviceAValidate = new GraphNode("ServiceA.Validate", "Method");
+        var serviceB = new GraphNode("ServiceB", "Class");
+        var serviceBProcess = new GraphNode("ServiceB.Process", "Method");
 
-        // B -> C (CALLS, in) — only in-edge
+        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+        store.AddEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
+
+        var neighbors = store.GetAggregatedNeighbors("Guard");
+
+        // The two consumer types surface as in-entries rolled up from their method nodes.
+        Assert.AreEqual(2, neighbors.Count);
+        Assert.IsTrue(neighbors.All(n => n.Direction == "in"));
+        Assert.IsTrue(neighbors.Any(n => n.Id == "ServiceA" && n.Kind == "Class" && n.EdgeKinds["CALLS"] == 1),
+            "ServiceA must appear as an inbound CALLS consumer");
+        Assert.IsTrue(neighbors.Any(n => n.Id == "ServiceB" && n.Kind == "Class" && n.EdgeKinds["CALLS"] == 1),
+            "ServiceB must appear as an inbound CALLS consumer");
+    }
+
+    [TestMethod]
+    public void GetAggregatedNeighbors_TypeNode_ExcludesOwnContainsMemberEdges()
+    {
+        // Type with members but no external dependencies → empty result, no CONTAINS noise.
+        var store = new GraphStore();
+        var type = new GraphNode("Lonely", "Class");
+        var m1 = new GraphNode("Lonely.A", "Method");
+        var m2 = new GraphNode("Lonely.B", "Property");
+
+        store.AddEdge(new GraphEdge(type, m1, "CONTAINS"));
+        store.AddEdge(new GraphEdge(type, m2, "CONTAINS"));
+
+        var neighbors = store.GetAggregatedNeighbors("Lonely");
+
+        Assert.AreEqual(0, neighbors.Count, "Own CONTAINS member edges must not appear");
+    }
+
+    [TestMethod]
+    public void GetAggregatedNeighbors_SameCallerTypeViaMultipleMemberEdges_CountsAggregated()
+    {
+        // Caller.M1 --CALLS--> Target.A and Caller.M2 --CALLS--> Target.B
+        // → ONE in-entry { Caller, CALLS: 2 } on the Target type query.
+        var store = new GraphStore();
+        var target = new GraphNode("Target", "Class");
+        var targetA = new GraphNode("Target.A", "Method");
+        var targetB = new GraphNode("Target.B", "Method");
+        var caller = new GraphNode("Caller", "Class");
+        var callerM1 = new GraphNode("Caller.M1", "Method");
+        var callerM2 = new GraphNode("Caller.M2", "Method");
+
+        store.AddEdge(new GraphEdge(target, targetA, "CONTAINS"));
+        store.AddEdge(new GraphEdge(target, targetB, "CONTAINS"));
+        store.AddEdge(new GraphEdge(caller, callerM1, "CONTAINS"));
+        store.AddEdge(new GraphEdge(caller, callerM2, "CONTAINS"));
+        store.AddEdge(new GraphEdge(callerM1, targetA, "CALLS"));
+        store.AddEdge(new GraphEdge(callerM2, targetB, "CALLS"));
+
+        var neighbors = store.GetAggregatedNeighbors("Target");
+
         Assert.AreEqual(1, neighbors.Count);
-        Assert.AreEqual("B", neighbors[0].Id);
-        Assert.AreEqual("CALLS", neighbors[0].Type);
+        Assert.AreEqual("Caller", neighbors[0].Id);
         Assert.AreEqual("in", neighbors[0].Direction);
+        Assert.AreEqual(2, neighbors[0].EdgeKinds["CALLS"]);
     }
 
     [TestMethod]
-    public void GetNeighbors_NodeWithBothInAndOutEdges_ReturnsOutEdgesBeforeInEdges()
+    public void GetAggregatedNeighbors_DualDirectionNeighbor_YieldsOneEntryPerDirection()
     {
-        var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("B");
+        // A --CALLS--> B and B --REFERENCES--> A → for A: out {B, CALLS} then in {B, REFERENCES}.
+        var store = new GraphStore();
+        var a = new GraphNode("A", "Class");
+        var b = new GraphNode("B", "Class");
 
-        // Out: C (CALLS, out), D (INJECTS, out) — In: A (CALLS, in)
-        Assert.AreEqual(3, neighbors.Count);
-        Assert.AreEqual("C", neighbors[0].Id);
-        Assert.AreEqual("CALLS", neighbors[0].Type);
+        store.AddEdge(new GraphEdge(a, b, "CALLS"));
+        store.AddEdge(new GraphEdge(b, a, "REFERENCES"));
+
+        var neighbors = store.GetAggregatedNeighbors("A");
+
+        Assert.AreEqual(2, neighbors.Count);
+        Assert.AreEqual("B", neighbors[0].Id);
         Assert.AreEqual("out", neighbors[0].Direction);
-        Assert.AreEqual("D", neighbors[1].Id);
-        Assert.AreEqual("INJECTS", neighbors[1].Type);
-        Assert.AreEqual("out", neighbors[1].Direction);
-        Assert.AreEqual("A", neighbors[2].Id);
-        Assert.AreEqual("CALLS", neighbors[2].Type);
-        Assert.AreEqual("in", neighbors[2].Direction);
+        Assert.AreEqual(1, neighbors[0].EdgeKinds["CALLS"]);
+        Assert.AreEqual("B", neighbors[1].Id);
+        Assert.AreEqual("in", neighbors[1].Direction);
+        Assert.AreEqual(1, neighbors[1].EdgeKinds["REFERENCES"]);
     }
 
     [TestMethod]
-    public void GetNeighbors_UnknownNode_ReturnsEmpty()
+    public void GetAggregatedNeighbors_MemberNodeQuery_RollsUpNeighborsAndDropsDeclaringContains()
+    {
+        // Querying Guard.Check directly: callers roll up to their types; the inbound
+        // CONTAINS edge from Guard (its declaring type) is structural noise and excluded.
+        var store = new GraphStore();
+        var guard = new GraphNode("Guard", "Class");
+        var guardCheck = new GraphNode("Guard.Check", "Method");
+        var serviceA = new GraphNode("ServiceA", "Class");
+        var serviceAValidate = new GraphNode("ServiceA.Validate", "Method");
+
+        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+
+        var neighbors = store.GetAggregatedNeighbors("Guard.Check");
+
+        Assert.AreEqual(1, neighbors.Count);
+        Assert.AreEqual("ServiceA", neighbors[0].Id);
+        Assert.AreEqual("in", neighbors[0].Direction);
+        Assert.AreEqual(1, neighbors[0].EdgeKinds["CALLS"]);
+    }
+
+    [TestMethod]
+    public void GetAggregatedNeighbors_UnknownNode_ReturnsEmpty()
     {
         var store = BuildSampleGraph();
-        var neighbors = store.GetNeighbors("Z");
+        var neighbors = store.GetAggregatedNeighbors("Z");
 
         Assert.AreEqual(0, neighbors.Count);
     }
 
     [TestMethod]
-    public void GetNeighbors_SameNeighborViaDistinctEdgeKinds_AppearsAsDistinctEntries()
+    public void GetAggregatedNeighbors_OutEntriesPrecedeInEntries()
     {
-        // Node X has two outbound edges to Y: one IMPLEMENTS, one INJECTS
-        // (parallel edges allowed if types differ — but QuikGraph allowParallelEdges:false
-        //  means we need a different scenario: one out-edge and one in-edge of different types
-        //  from the same neighbor node.)
-        //
-        // Graph: X --IMPLEMENTS--> I   (X out, I in)
-        //        Y --INJECTS--> I      (Y out, I in)
-        // For node I: out-edges=none, in-edges=[X→I IMPLEMENTS, Y→I INJECTS]
-        // GetNeighbors("I") → [{X,IMPLEMENTS,in}, {Y,INJECTS,in}]
-        var store = new GraphStore();
-        var x = new GraphNode("X", "Class");
-        var y = new GraphNode("Y", "Class");
-        var i = new GraphNode("I", "Interface");
+        var store = BuildSampleGraph();
+        var neighbors = store.GetAggregatedNeighbors("B");
 
-        store.AddEdge(new GraphEdge(x, i, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(y, i, "INJECTS"));
-
-        var neighbors = store.GetNeighbors("I");
-
-        Assert.AreEqual(2, neighbors.Count);
-        Assert.IsTrue(neighbors.Any(n => n.Id == "X" && n.Type == "IMPLEMENTS" && n.Direction == "in"),
-            "X via IMPLEMENTS inbound must appear");
-        Assert.IsTrue(neighbors.Any(n => n.Id == "Y" && n.Type == "INJECTS" && n.Direction == "in"),
-            "Y via INJECTS inbound must appear");
+        // Out: C (CALLS), D (INJECTS) — In: A (CALLS)
+        Assert.AreEqual(3, neighbors.Count);
+        Assert.AreEqual("C", neighbors[0].Id);
+        Assert.AreEqual("out", neighbors[0].Direction);
+        Assert.AreEqual("D", neighbors[1].Id);
+        Assert.AreEqual("out", neighbors[1].Direction);
+        Assert.AreEqual("A", neighbors[2].Id);
+        Assert.AreEqual("in", neighbors[2].Direction);
+        Assert.AreEqual(1, neighbors[2].EdgeKinds["CALLS"]);
     }
 
     // ── BfsBackward ──────────────────────────────────────────────────────────
