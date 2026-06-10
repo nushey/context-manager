@@ -52,6 +52,8 @@ That's it for `inspect_file` and `inspect_context`. No Python, no Node, no Docke
 
 Install [Visual Studio Build Tools 2022 or 2025](https://visualstudio.microsoft.com/downloads/) (free) with the **.NET desktop build tools** workload. This includes MSBuild and the Framework 4.8 reference assemblies. Both MSBuild 17.x (VS2022) and MSBuild 18.x (VS2025) are supported.
 
+When multiple MSBuild installations exist on the same machine (e.g. Build Tools 17.x alongside VS 18.x), the tool deterministically picks the highest installed version. To pin a specific installation instead, set the `CONTEXT_MANAGER_MSBUILD_PATH` environment variable to that installation's MSBuild bin directory (the folder containing `MSBuild.dll`), e.g. `C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin`.
+
 `project_scan` is not supported on Linux for `net48` solutions. `inspect_file` and `inspect_context` work on any platform regardless of target framework.
 
 ### 1. Install the tool
