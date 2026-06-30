@@ -92,14 +92,18 @@ public class GraphBuilder
                     {
                         var methodSymbol = model.GetDeclaredSymbol(methodDecl, ct) as IMethodSymbol;
                         if (methodSymbol is null) continue;
-                        _store.AddNode(new GraphNode(methodSymbol.ToDisplayString(), "Method"));
+                        var methodNode = NodeClassifier.NodeFor(methodSymbol);
+                        if (methodNode is not null)
+                            _store.AddNode(methodNode);
                         break;
                     }
                     case PropertyDeclarationSyntax propertyDecl:
                     {
                         var propSymbol = model.GetDeclaredSymbol(propertyDecl, ct) as IPropertySymbol;
                         if (propSymbol is null) continue;
-                        _store.AddNode(new GraphNode(propSymbol.ToDisplayString(), "Property"));
+                        var propNode = NodeClassifier.NodeFor(propSymbol);
+                        if (propNode is not null)
+                            _store.AddNode(propNode);
                         break;
                     }
                 }
@@ -107,11 +111,7 @@ public class GraphBuilder
         }
     }
 
-    private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol)
-    {
-        var kind = NodeClassifier.ClassifyTypeKind(symbol);
-        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
-    }
+    private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol) => NodeClassifier.NodeFor(symbol);
 
     private static bool IsSourceDocument(string? filePath)
     {

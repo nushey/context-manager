@@ -79,4 +79,31 @@ public class NodeClassifierTests
         var sym = GetSymbol("public delegate void Handler(int x);", "Handler");
         Assert.IsNull(NodeClassifier.ClassifyTypeKind(sym));
     }
+
+    // Resolves an IMethodSymbol from an inline source string — same bare-compilation approach as
+    // GetSymbol, for exercising the member branches of NodeFor.
+    private static IMethodSymbol GetMethodSymbol(string source, string methodName)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create("NodeClassifierTest", syntaxTrees: [tree]);
+        var model = compilation.GetSemanticModel(tree);
+        var root = (CompilationUnitSyntax)tree.GetRoot();
+
+        var node = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == methodName);
+
+        return (IMethodSymbol)model.GetDeclaredSymbol(node)!;
+    }
+
+    [TestMethod]
+    public void NodeFor_MethodSymbol_IsMethodNodeWithDisplayStringId()
+    {
+        var sym = GetMethodSymbol("public class C { public void Do(int x) { } }", "Do");
+        var node = NodeClassifier.NodeFor(sym);
+
+        Assert.IsNotNull(node);
+        Assert.AreEqual("Method", node!.Kind);
+        Assert.AreEqual(sym.ToDisplayString(), node.Id);
+    }
 }

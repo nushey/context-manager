@@ -23,7 +23,7 @@ public class EdgeExtractor
             if (typeSymbol is null)
                 continue;
 
-            var sourceNode = NodeFor(typeSymbol);
+            var sourceNode = NodeClassifier.NodeFor(typeSymbol);
             if (sourceNode is null)
                 continue;
 
@@ -36,7 +36,7 @@ public class EdgeExtractor
                     if (baseSymbol is null || !IsSourceSymbol(baseSymbol))
                         continue;
 
-                    var targetNode = NodeFor(baseSymbol);
+                    var targetNode = NodeClassifier.NodeFor(baseSymbol);
                     if (targetNode is null)
                         continue;
 
@@ -159,19 +159,6 @@ public class EdgeExtractor
         return edges;
     }
 
-    private static GraphNode? NodeFor(ISymbol symbol)
-    {
-        var kind = symbol switch
-        {
-            INamedTypeSymbol named => NodeClassifier.ClassifyTypeKind(named),
-            IMethodSymbol => "Method",
-            IPropertySymbol => "Property",
-            _ => null
-        };
-
-        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
-    }
-
     private static bool IsSourceSymbol(ISymbol symbol)
     {
         // BCL and external types have no declaring syntax references.
@@ -225,7 +212,7 @@ public class EdgeExtractor
             var openDef = named.OriginalDefinition;
             if (IsSourceSymbol(openDef))
             {
-                var defNode = NodeFor(openDef);
+                var defNode = NodeClassifier.NodeFor(openDef);
                 if (defNode is not null)
                     AddEdge(sourceNode, defNode, edgeType, seen, edges);
             }
@@ -235,7 +222,7 @@ public class EdgeExtractor
         }
         else if (IsSourceSymbol(typeSymbol))
         {
-            var targetNode = NodeFor(typeSymbol);
+            var targetNode = NodeClassifier.NodeFor(typeSymbol);
             if (targetNode is not null)
                 AddEdge(sourceNode, targetNode, edgeType, seen, edges);
         }
@@ -261,7 +248,7 @@ public class EdgeExtractor
             var openDef = named.OriginalDefinition;
             if (IsSourceSymbol(openDef))
             {
-                var defNode = NodeFor(openDef);
+                var defNode = NodeClassifier.NodeFor(openDef);
                 if (defNode is not null)
                     AddEdge(sourceNode, defNode, "REFERENCES", seen, edges);
             }
@@ -271,7 +258,7 @@ public class EdgeExtractor
         }
         else if (IsSourceSymbol(typeSymbol))
         {
-            var targetNode = NodeFor(typeSymbol);
+            var targetNode = NodeClassifier.NodeFor(typeSymbol);
             if (targetNode is not null)
                 AddEdge(sourceNode, targetNode, "REFERENCES", seen, edges);
         }
