@@ -163,10 +163,7 @@ public class EdgeExtractor
     {
         var kind = symbol switch
         {
-            INamedTypeSymbol { TypeKind: TypeKind.Interface } => "Interface",
-            INamedTypeSymbol { TypeKind: TypeKind.Class } => "Class",
-            INamedTypeSymbol { TypeKind: TypeKind.Struct } => "Class",
-            INamedTypeSymbol { IsRecord: true } => "Record",
+            INamedTypeSymbol named => NodeClassifier.ClassifyTypeKind(named),
             IMethodSymbol => "Method",
             IPropertySymbol => "Property",
             _ => null

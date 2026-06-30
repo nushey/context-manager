@@ -23,6 +23,7 @@ public class EdgeExtractorTests
     private static readonly string TypeWithMembersPath = FixturePath("TypeWithMembers.cs");
     private static readonly string TypeWithReferencesPath = FixturePath("TypeWithReferences.cs");
     private static readonly string OpenGenericImplementationPath = FixturePath("OpenGenericImplementation.cs");
+    private static readonly string RecordStructPath = FixturePath("RecordStruct.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -455,5 +456,26 @@ public class EdgeExtractorTests
 
         Assert.IsTrue(typeArgReference,
             $"Expected a REFERENCES edge to the type argument Catalog. Edges found: [{string.Join(", ", edges.Where(e => e.Type == "REFERENCES").Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    public void Extract_RecordStruct_SourceNodeKindIsRecord()
+    {
+        // A `record struct` has TypeKind.Struct AND IsRecord. The pre-shared-classifier NodeFor
+        // matched Struct → "Class" before IsRecord, mislabeling it. The shared classifier checks
+        // IsRecord first, so the Point source node must now be "Record".
+        var (model, root) = ParseWithCompilation([RecordStructPath]);
+        var extractor = CreateExtractor();
+
+        var edges = extractor.Extract(model, root);
+
+        // The Sum member produces a CONTAINS edge whose source is the record struct node.
+        var pointSource = edges.FirstOrDefault(e =>
+            e.Type == "CONTAINS" && e.Source.Id.Contains("Point"));
+
+        Assert.IsNotNull(pointSource,
+            $"Expected a CONTAINS edge from the Point record struct. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+        Assert.AreEqual("Record", pointSource!.Source.Kind,
+            $"record struct source node must be classified 'Record' (not 'Class'). Got Kind='{pointSource.Source.Kind}' for '{pointSource.Source.Id}'.");
     }
 }

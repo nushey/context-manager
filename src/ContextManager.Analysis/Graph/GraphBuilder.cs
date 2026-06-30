@@ -109,15 +109,7 @@ public class GraphBuilder
 
     private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol)
     {
-        var kind = symbol switch
-        {
-            { TypeKind: TypeKind.Interface } => "Interface",
-            { IsRecord: true } => "Record",
-            { TypeKind: TypeKind.Class } => "Class",
-            { TypeKind: TypeKind.Struct } => "Class",
-            _ => null
-        };
-
+        var kind = NodeClassifier.ClassifyTypeKind(symbol);
         return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
     }
 
