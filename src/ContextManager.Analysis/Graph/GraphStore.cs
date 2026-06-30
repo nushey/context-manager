@@ -115,7 +115,7 @@ public class GraphStore
     /// source). Returns one entry per (rolled-up id, direction): out entries first, then
     /// in entries, each in graph-encounter order.
     /// </summary>
-    public IReadOnlyList<GraphNeighbor> GetAggregatedNeighbors(string nodeId)
+    public IReadOnlyList<GraphNeighbor> GetAggregatedNeighbors(string nodeId, CancellationToken ct = default)
     {
         var s = _state;
         if (!s.NodeById.TryGetValue(nodeId, out var node))
@@ -148,6 +148,7 @@ public class GraphStore
 
         foreach (var scopeNode in scope)
         {
+            ct.ThrowIfCancellationRequested();
             foreach (var edge in graph.OutEdges(scopeNode))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Target))
@@ -159,6 +160,7 @@ public class GraphStore
 
         foreach (var scopeNode in scope)
         {
+            ct.ThrowIfCancellationRequested();
             foreach (var edge in graph.InEdges(scopeNode))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Source))
@@ -177,7 +179,7 @@ public class GraphStore
     /// Breadth-first backward traversal: follows in-edges whose Type is in <paramref name="edgeTypes"/>.
     /// Returns node IDs in BFS visit order, excluding the start node.
     /// </summary>
-    public IReadOnlyList<string> BfsBackward(string nodeId, IReadOnlySet<string> edgeTypes)
+    public IReadOnlyList<string> BfsBackward(string nodeId, IReadOnlySet<string> edgeTypes, CancellationToken ct = default)
     {
         var s = _state;
         if (!s.NodeById.TryGetValue(nodeId, out var startNode))
@@ -193,6 +195,7 @@ public class GraphStore
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
+            ct.ThrowIfCancellationRequested();
 
             foreach (var edge in graph.InEdges(current))
             {
@@ -226,7 +229,8 @@ public class GraphStore
     public IReadOnlyList<string> ImpactBackward(
         string nodeId,
         IReadOnlySet<string> edgeTypes,
-        out IReadOnlyList<string> bridgedInterfaceIds)
+        out IReadOnlyList<string> bridgedInterfaceIds,
+        CancellationToken ct = default)
     {
         var s = _state;
         if (!s.NodeById.TryGetValue(nodeId, out var startNode))
@@ -258,6 +262,7 @@ public class GraphStore
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
+            ct.ThrowIfCancellationRequested();
 
             // Apply interface bridging to every concrete class dequeued — not only the seed.
             // Enqueue bridged interfaces and their members so inbound INJECTS on those interfaces
@@ -415,7 +420,7 @@ public class GraphStore
     /// Returns the ordered node IDs forming the directed shortest path from source to target
     /// (inclusive of both endpoints). Returns empty if no path exists.
     /// </summary>
-    public IReadOnlyList<string> ShortestPath(string sourceId, string targetId)
+    public IReadOnlyList<string> ShortestPath(string sourceId, string targetId, CancellationToken ct = default)
     {
         var s = _state;
         if (!s.NodeById.TryGetValue(sourceId, out var sourceNode))
@@ -426,6 +431,11 @@ public class GraphStore
 
         if (sourceNode.Equals(targetNode))
             return [sourceId];
+
+        // QuikGraph's Dijkstra is not internally cancellable, so we check once before invoking it.
+        // A mid-traversal cancel cannot abort the algorithm; this pre-check catches an already-
+        // cancelled client before spending the work.
+        ct.ThrowIfCancellationRequested();
 
         var tryGetPaths = s.Graph.ShortestPathsDijkstra(_ => 1.0, sourceNode);
 

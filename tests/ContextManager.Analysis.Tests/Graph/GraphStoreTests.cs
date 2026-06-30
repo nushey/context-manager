@@ -1092,4 +1092,47 @@ public class GraphStoreTests
         Assert.IsTrue(neighbors.Any(n => n.Id == "B"),
             "Post-commit read must see the rebuilt graph (A → B).");
     }
+
+    // ── Cancellation (§1.6 / AC5) ─────────────────────────────────────────────
+    // An already-cancelled token must abort a traversal via OperationCanceledException at the
+    // first loop checkpoint, rather than running to completion.
+
+    [TestMethod]
+    [Timeout(10_000)]
+    public void ImpactBackward_PreCancelledToken_ThrowsOperationCanceledException()
+    {
+        // A 60-node chain: T(i+1).M --CALLS--> T(i).M, with each T(i) CONTAINS T(i).M.
+        // Backward impact from T0 reaches the whole chain, so there is work to (not) do.
+        var store = new GraphStore();
+        const int n = 60;
+        for (var i = 0; i < n; i++)
+        {
+            store.AddNode(new GraphNode($"T{i}", "Class"));
+            store.AddEdge(new GraphEdge(
+                new GraphNode($"T{i}", "Class"),
+                new GraphNode($"T{i}.M", "Method"),
+                "CONTAINS"));
+        }
+        for (var i = 0; i < n - 1; i++)
+        {
+            store.AddEdge(new GraphEdge(
+                new GraphNode($"T{i + 1}.M", "Method"),
+                new GraphNode($"T{i}.M", "Method"),
+                "CALLS"));
+        }
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        try
+        {
+            store.ImpactBackward("T0", edgeTypes, out _, cts.Token);
+            Assert.Fail("Expected OperationCanceledException for a pre-cancelled token.");
+        }
+        catch (OperationCanceledException)
+        {
+            // expected — cancellation propagated into the traversal loop.
+        }
+    }
 }

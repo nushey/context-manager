@@ -27,7 +27,7 @@ public sealed class GraphGetDependenciesTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options));
 
-        var neighbors = _store.GetAggregatedNeighbors(nodeId);
+        var neighbors = _store.GetAggregatedNeighbors(nodeId, ct);
         var contracts = neighbors.Select(n => new GraphNodeContract(n.Id, n.Kind, n.Direction, n.EdgeKinds)).ToList();
 
         return Task.FromResult(JsonSerializer.Serialize(contracts, AnalysisJson.Options));

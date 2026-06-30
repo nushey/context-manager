@@ -37,7 +37,7 @@ public sealed class GraphImpactAnalysisTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options));
 
-        var affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out var bridgedInterfaceIds);
+        var affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out var bridgedInterfaceIds, ct);
         var diagnostics = BuildReflectionDiagnostics(startNode!, nodeId, bridgedInterfaceIds);
         var result = new GraphImpactResult(affectedIds, diagnostics);
 
