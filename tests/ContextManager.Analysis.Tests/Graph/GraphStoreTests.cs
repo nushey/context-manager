@@ -636,6 +636,25 @@ public class GraphStoreTests
         Assert.IsFalse(store.TryGetNode("EXTRA", out _));
     }
 
+    [TestMethod]
+    public void Deserialize_MalformedJson_ThrowsJsonException()
+    {
+        // Program.cs wraps the startup graph load in try/catch and continues with an empty store
+        // on failure; this test pins the lower-level contract that a corrupt payload is rejected
+        // rather than silently producing a partial graph.
+        var store = new GraphStore();
+
+        try
+        {
+            store.Deserialize("{ this is not valid json");
+            Assert.Fail("Expected JsonException for malformed input.");
+        }
+        catch (JsonException)
+        {
+            // expected — previous (empty) graph is preserved, no partial state.
+        }
+    }
+
     // ── Clear ────────────────────────────────────────────────────────────────
 
     [TestMethod]
