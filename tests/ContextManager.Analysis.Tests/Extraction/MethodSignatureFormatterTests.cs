@@ -8,7 +8,7 @@ namespace ContextManager.Analysis.Tests.Extraction;
 public class MethodSignatureFormatterTests
 {
     [TestMethod]
-    public void Format_MultipleParameters_ReturnsTypesOnlyCommaSeparated()
+    public void Format_MultipleParameters_ReturnsNameTypePairsCommaSeparated()
     {
         var method = new MethodInfo(
             Name: "DoThing",
@@ -21,7 +21,7 @@ public class MethodSignatureFormatterTests
 
         var result = MethodSignatureFormatter.Format(method);
 
-        Assert.AreEqual("DoThing(string, int): bool", result);
+        Assert.AreEqual("DoThing(name:string, count:int): bool", result);
     }
 
     [TestMethod]
@@ -72,6 +72,6 @@ public class MethodSignatureFormatterTests
 
         var result = MethodSignatureFormatter.Format(method);
 
-        Assert.AreEqual("FindAll(CancellationToken): Task<IReadOnlyList<Order>>", result);
+        Assert.AreEqual("FindAll(ct:CancellationToken): Task<IReadOnlyList<Order>>", result);
     }
 }
