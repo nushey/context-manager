@@ -28,12 +28,18 @@ public static class FileAnalyzer
 
         var tree = CSharpSyntaxTree.ParseText(text, cancellationToken: ct);
 
-        var diagnostics = tree.GetDiagnostics(ct);
-        var firstError = diagnostics.FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error);
-        if (firstError is not null)
-            return new AnalysisError("parse_failed", firstError.GetMessage(), filePath);
-
-        var root = (CompilationUnitSyntax)tree.GetRoot(ct);
+        // Best-effort: extract from whatever tree Roslyn returns even when it has diagnostics,
+        // surfacing the error messages via ParseErrors. Only the catastrophic case — the syntax
+        // root itself being unobtainable — falls back to a parse_failed error.
+        CompilationUnitSyntax root;
+        try
+        {
+            root = (CompilationUnitSyntax)tree.GetRoot(ct);
+        }
+        catch (Exception)
+        {
+            return new AnalysisError("parse_failed", "Unable to obtain syntax tree root.", filePath);
+        }
 
         var usings = root.Usings
             .Select(u => u.Name!.ToString())
@@ -48,10 +54,16 @@ public static class FileAnalyzer
         var extractor = new TypeExtractor();
         extractor.Visit(root);
 
+        var parseErrors = tree.GetDiagnostics(ct)
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.GetMessage())
+            .ToList();
+
         return new FileAnalysis(
             File: Path.GetFileName(filePath),
             Namespace: ns,
             Usings: usings,
-            Types: extractor.Types);
+            Types: extractor.Types,
+            ParseErrors: parseErrors.Count > 0 ? parseErrors : null);
     }
 }

@@ -4,4 +4,5 @@ public sealed record FileAnalysis(
     string File,
     string? Namespace,
     IReadOnlyList<string> Usings,
-    IReadOnlyList<TypeInfo> Types);
+    IReadOnlyList<TypeInfo> Types,
+    IReadOnlyList<string>? ParseErrors = null);

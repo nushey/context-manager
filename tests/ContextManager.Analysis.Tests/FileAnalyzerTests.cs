@@ -51,25 +51,37 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_UnparseableCSharp_ReturnsParseFailedWithFirstError()
+    public void Analyze_UnparseableCSharp_ReturnsFileAnalysisWithParseErrors()
     {
+        // Best-effort: a malformed file yields a FileAnalysis (salvaging whatever Roslyn parsed)
+        // with a populated parseErrors list, not an AnalysisError — unless the syntax root itself
+        // is unobtainable.
         var tmp = Path.ChangeExtension(Path.GetTempFileName(), ".cs");
         try
         {
             File.WriteAllText(tmp, "class Broken { public void Foo( { }");
             var result = FileAnalyzer.Analyze(tmp, CancellationToken.None);
 
-            Assert.IsInstanceOfType(result, typeof(AnalysisError));
-            var error = (AnalysisError)result;
-            Assert.AreEqual("parse_failed", error.Code);
-            Assert.IsNotNull(error.Message);
-            Assert.IsTrue(error.Message.Length > 0);
-            Assert.AreEqual(tmp, error.FilePath);
+            Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+            var analysis = (FileAnalysis)result;
+            Assert.IsNotNull(analysis.ParseErrors);
+            Assert.IsTrue(analysis.ParseErrors!.Count > 0);
+            Assert.AreEqual(Path.GetFileName(tmp), analysis.File);
         }
         finally
         {
             if (File.Exists(tmp)) File.Delete(tmp);
         }
+    }
+
+    [TestMethod]
+    public void Analyze_CleanFile_ParseErrorsIsNull()
+    {
+        var result = FileAnalyzer.Analyze(FixturePath("OrderStatus.cs"), CancellationToken.None);
+
+        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
+        var analysis = (FileAnalysis)result;
+        Assert.IsNull(analysis.ParseErrors);
     }
 
     // ── Namespace: file-scoped ───────────────────────────────────────────────
