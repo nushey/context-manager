@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Services
+    .AddSingleton<FileAnalyzer>()
     .AddSingleton<CrossReferenceResolver>()
     .AddSingleton<ContextAnalyzer>()
     .AddSingleton<GraphStore>()
