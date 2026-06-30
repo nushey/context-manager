@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
 using ContextManager.Mcp.Serialization;

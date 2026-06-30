@@ -1,7 +1,6 @@
 using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Models;
-using ContextManager.Mcp.Serialization;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ContextManager.Analysis.Tests;

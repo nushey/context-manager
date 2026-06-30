@@ -1,6 +1,4 @@
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using QuikGraph;
 using QuikGraph.Algorithms;
 
@@ -8,15 +6,6 @@ namespace ContextManager.Analysis.Graph;
 
 public class GraphStore
 {
-    // Same options as SerializerOptions in the Mcp layer — kept here to avoid a circular dependency.
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-
     // Immutable-once-published snapshot: the graph and its id index move together so a reader
     // that captures one _state reference observes a consistent pair of collections. A rebuild
     // constructs a separate staging State and publishes it atomically via CommitRebuild, so
@@ -451,7 +440,7 @@ public class GraphStore
 
     /// <summary>
     /// Serializes the graph to JSON: <c>{ "nodes": [...], "edges": [...] }</c>.
-    /// Uses <see cref="SerializerOptions"/> for consistency with existing tools.
+    /// Uses the shared <see cref="AnalysisJson"/> options for consistency with the MCP tools.
     /// </summary>
     public string Serialize()
     {
@@ -460,7 +449,7 @@ public class GraphStore
             Nodes: s.Graph.Vertices.Select(n => new NodeDto(n.Id, n.Kind)).ToList(),
             Edges: s.Graph.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList());
 
-        return JsonSerializer.Serialize(payload, SerializerOptions);
+        return JsonSerializer.Serialize(payload, AnalysisJson.Options);
     }
 
     /// <summary>
@@ -470,7 +459,7 @@ public class GraphStore
     /// </summary>
     public void Deserialize(string json)
     {
-        var payload = JsonSerializer.Deserialize<GraphPayload>(json, SerializerOptions)
+        var payload = JsonSerializer.Deserialize<GraphPayload>(json, AnalysisJson.Options)
             ?? throw new JsonException("Graph payload deserialized to null.");
 
         var newState = new State();

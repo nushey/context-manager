@@ -2,7 +2,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace ContextManager.Mcp.Serialization;
+namespace ContextManager.Analysis;
 
 public static class AnalysisJson
 {
