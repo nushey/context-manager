@@ -17,21 +17,39 @@ public class GraphStore
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    private BidirectionalGraph<GraphNode, GraphEdge> _graph = new(allowParallelEdges: false);
+    // Immutable-once-published snapshot: the graph and its id index move together so a reader
+    // that captures one _state reference observes a consistent pair of collections. A rebuild
+    // constructs a separate staging State and publishes it atomically via CommitRebuild, so
+    // concurrent readers never enumerate a structure being mutated.
+    private sealed class State
+    {
+        public readonly BidirectionalGraph<GraphNode, GraphEdge> Graph = new(allowParallelEdges: false);
+        public readonly Dictionary<string, GraphNode> NodeById = new(StringComparer.Ordinal);
+    }
 
-    // Index for fast lookup by ID without scanning all vertices.
-    private readonly Dictionary<string, GraphNode> _nodeById = new(StringComparer.Ordinal);
+    // Volatile: every reader captures this reference once and reads both collections from it.
+    private volatile State _state = new();
 
-    public int NodeCount => _graph.VertexCount;
-    public int EdgeCount => _graph.EdgeCount;
+    // Staging target for an in-progress rebuild. Volatile because GraphBuilder.BuildAsync is async
+    // and may resume on a different thread pool thread after an await — the writer must observe the
+    // staging reference set by BeginRebuild. Only the writer (holding _rebuildLock) mutates it.
+    private volatile State? _staging;
+    private readonly SemaphoreSlim _rebuildLock = new(1, 1);
+
+    public int NodeCount => _state.Graph.VertexCount;
+    public int EdgeCount => _state.Graph.EdgeCount;
 
     public void AddNode(GraphNode node)
     {
-        if (_nodeById.ContainsKey(node.Id))
+        // Route to staging when a rebuild is active; otherwise mutate the live _state.
+        // Direct mutation of _state (no rebuild) is reserved for programmatic/test builds,
+        // which are single-threaded by contract — concurrent rebuilds go through BeginRebuild.
+        var s = _staging ?? _state;
+        if (s.NodeById.ContainsKey(node.Id))
             return;
 
-        _graph.AddVertex(node);
-        _nodeById[node.Id] = node;
+        s.Graph.AddVertex(node);
+        s.NodeById[node.Id] = node;
     }
 
     public void AddEdge(GraphEdge edge)
@@ -40,10 +58,53 @@ public class GraphStore
         AddNode(edge.Source);
         AddNode(edge.Target);
 
-        _graph.AddEdge(edge);
+        (_staging ?? _state).Graph.AddEdge(edge);
     }
 
-    public bool TryGetNode(string id, out GraphNode? node) => _nodeById.TryGetValue(id, out node);
+    public bool TryGetNode(string id, out GraphNode? node) => _state.NodeById.TryGetValue(id, out node);
+
+    /// <summary>
+    /// Acquires the writer lock and starts a fresh staging graph. Callers MUST pair this with
+    /// <see cref="CommitRebuild"/> (success) or <see cref="AbortRebuild"/> (failure). AddNode/AddEdge
+    /// invoked while a rebuild is active mutate the staging graph, leaving the published
+    /// <c>_state</c> untouched until CommitRebuild publishes the new snapshot.
+    /// </summary>
+    public void BeginRebuild()
+    {
+        _rebuildLock.Wait();
+        _staging = new State();
+    }
+
+    /// <summary>
+    /// Publishes the staging graph atomically and releases the writer lock. Concurrent readers
+    /// switch to the new snapshot on their next capture; the previous snapshot stays intact.
+    /// No-op (and does not release the lock) if no rebuild is in progress.
+    /// </summary>
+    public void CommitRebuild()
+    {
+        var staging = _staging;
+        if (staging is null)
+            return;
+
+        _staging = null;
+        _state = staging; // volatile publish — readers acquire the new snapshot on next read
+        _rebuildLock.Release();
+    }
+
+    /// <summary>
+    /// Discards the staging graph without publishing and releases the writer lock. Use when a
+    /// rebuild (GraphBuilder.BuildAsync) fails partway through, so the previous graph is preserved
+    /// and the lock is not leaked (which would deadlock the next scan).
+    /// </summary>
+    public void AbortRebuild()
+    {
+        var staging = _staging;
+        if (staging is null)
+            return;
+
+        _staging = null;
+        _rebuildLock.Release();
+    }
 
     /// <summary>
     /// Aggregated, type-aware neighbor query. For a type node the aggregation scope is the
@@ -56,12 +117,14 @@ public class GraphStore
     /// </summary>
     public IReadOnlyList<GraphNeighbor> GetAggregatedNeighbors(string nodeId)
     {
-        if (!_nodeById.TryGetValue(nodeId, out var node))
+        var s = _state;
+        if (!s.NodeById.TryGetValue(nodeId, out var node))
             return [];
 
+        var graph = s.Graph;
         var scope = new List<GraphNode> { node! };
-        if (!IsMemberNode(node!))
-            scope.AddRange(GetContainedMembers(node!));
+        if (!IsMemberNode(graph, node!))
+            scope.AddRange(GetContainedMembers(graph, node!));
 
         var scopeSet = new HashSet<GraphNode>(scope);
         var entries = new List<(string Id, string Kind, string Direction, Dictionary<string, int> EdgeKinds)>();
@@ -69,7 +132,7 @@ public class GraphStore
 
         void Accumulate(GraphNode neighbor, string edgeType, string direction)
         {
-            var rolled = IsMemberNode(neighbor) ? GetDeclaringType(neighbor) ?? neighbor : neighbor;
+            var rolled = IsMemberNode(graph, neighbor) ? GetDeclaringType(graph, neighbor) ?? neighbor : neighbor;
             var key = (rolled.Id, direction);
 
             if (!indexByKey.TryGetValue(key, out var idx))
@@ -85,7 +148,7 @@ public class GraphStore
 
         foreach (var scopeNode in scope)
         {
-            foreach (var edge in _graph.OutEdges(scopeNode))
+            foreach (var edge in graph.OutEdges(scopeNode))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Target))
                     continue;
@@ -96,7 +159,7 @@ public class GraphStore
 
         foreach (var scopeNode in scope)
         {
-            foreach (var edge in _graph.InEdges(scopeNode))
+            foreach (var edge in graph.InEdges(scopeNode))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Source))
                     continue;
@@ -116,9 +179,11 @@ public class GraphStore
     /// </summary>
     public IReadOnlyList<string> BfsBackward(string nodeId, IReadOnlySet<string> edgeTypes)
     {
-        if (!_nodeById.TryGetValue(nodeId, out var startNode))
+        var s = _state;
+        if (!s.NodeById.TryGetValue(nodeId, out var startNode))
             return [];
 
+        var graph = s.Graph;
         var visited = new HashSet<GraphNode> { startNode };
         var queue = new Queue<GraphNode>();
         var result = new List<string>();
@@ -129,7 +194,7 @@ public class GraphStore
         {
             var current = queue.Dequeue();
 
-            foreach (var edge in _graph.InEdges(current))
+            foreach (var edge in graph.InEdges(current))
             {
                 if (!edgeTypes.Contains(edge.Type))
                     continue;
@@ -163,22 +228,24 @@ public class GraphStore
         IReadOnlySet<string> edgeTypes,
         out IReadOnlyList<string> bridgedInterfaceIds)
     {
-        if (!_nodeById.TryGetValue(nodeId, out var startNode))
+        var s = _state;
+        if (!s.NodeById.TryGetValue(nodeId, out var startNode))
         {
             bridgedInterfaceIds = [];
             return [];
         }
 
+        var graph = s.Graph;
         var bridged = new List<string>();
 
         // Build seed: start node + its members + implemented interfaces + their members.
         var seeds = new List<GraphNode> { startNode };
-        seeds.AddRange(GetContainedMembers(startNode));
+        seeds.AddRange(GetContainedMembers(graph, startNode));
 
-        foreach (var iface in GetImplementedInterfaces(startNode))
+        foreach (var iface in GetImplementedInterfaces(graph, startNode))
         {
             seeds.Add(iface);
-            seeds.AddRange(GetContainedMembers(iface));
+            seeds.AddRange(GetContainedMembers(graph, iface));
             bridged.Add(iface.Id);
         }
 
@@ -195,7 +262,7 @@ public class GraphStore
             // Apply interface bridging to every concrete class dequeued — not only the seed.
             // Enqueue bridged interfaces and their members so inbound INJECTS on those interfaces
             // are followed. The shared visited set guarantees cycle safety and dedup.
-            foreach (var iface in GetImplementedInterfaces(current))
+            foreach (var iface in GetImplementedInterfaces(graph, current))
             {
                 if (!visited.Add(iface))
                     continue;
@@ -204,7 +271,7 @@ public class GraphStore
                 seedIds.Add(iface.Id);
                 bridged.Add(iface.Id);
 
-                foreach (var member in GetContainedMembers(iface))
+                foreach (var member in GetContainedMembers(graph, iface))
                 {
                     if (visited.Add(member))
                     {
@@ -219,22 +286,22 @@ public class GraphStore
             // the result (rolled up if a member) AND are enqueued for full transitive reach.
             // Unlike bridged interfaces, implementors are NOT added to seedIds/bridged, so the
             // reflection diagnostic and result-vs-routing distinction are preserved.
-            foreach (var implementor in GetImplementors(current))
+            foreach (var implementor in GetImplementors(graph, current))
             {
                 if (!visited.Add(implementor))
                     continue;
 
                 queue.Enqueue(implementor);
 
-                var reportId = IsMemberNode(implementor)
-                    ? GetDeclaringType(implementor)?.Id ?? implementor.Id
+                var reportId = IsMemberNode(graph, implementor)
+                    ? GetDeclaringType(graph, implementor)?.Id ?? implementor.Id
                     : implementor.Id;
 
                 if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
                     result.Add(reportId);
             }
 
-            foreach (var edge in _graph.InEdges(current))
+            foreach (var edge in graph.InEdges(current))
             {
                 if (!edgeTypes.Contains(edge.Type))
                     continue;
@@ -247,8 +314,8 @@ public class GraphStore
                 queue.Enqueue(caller);
 
                 // Roll up members to their declaring type.
-                var reportId = IsMemberNode(caller)
-                    ? GetDeclaringType(caller)?.Id ?? caller.Id
+                var reportId = IsMemberNode(graph, caller)
+                    ? GetDeclaringType(graph, caller)?.Id ?? caller.Id
                     : caller.Id;
 
                 if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
@@ -274,40 +341,46 @@ public class GraphStore
     /// </summary>
     public IReadOnlyList<string> GetImplementedInterfaceIds(string nodeId)
     {
-        if (!_nodeById.TryGetValue(nodeId, out var node))
+        var s = _state;
+        if (!s.NodeById.TryGetValue(nodeId, out var node))
             return [];
 
-        return _graph.OutEdges(node)
+        return s.Graph.OutEdges(node)
                      .Where(e => e.Type == "IMPLEMENTS")
                      .Select(e => e.Target.Id)
                      .ToList();
     }
 
     // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
-    private IEnumerable<GraphNode> GetContainedMembers(GraphNode typeNode) =>
-        _graph.OutEdges(typeNode)
+    private static IEnumerable<GraphNode> GetContainedMembers(
+        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
+        graph.OutEdges(typeNode)
               .Where(e => e.Type == "CONTAINS")
               .Select(e => e.Target);
 
     // Returns all nodes connected via outbound IMPLEMENTS edges.
-    private IEnumerable<GraphNode> GetImplementedInterfaces(GraphNode typeNode) =>
-        _graph.OutEdges(typeNode)
+    private static IEnumerable<GraphNode> GetImplementedInterfaces(
+        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
+        graph.OutEdges(typeNode)
               .Where(e => e.Type == "IMPLEMENTS")
               .Select(e => e.Target);
 
     // Returns all nodes connected via inbound IMPLEMENTS edges (the classes that implement a type).
-    private IEnumerable<GraphNode> GetImplementors(GraphNode typeNode) =>
-        _graph.InEdges(typeNode)
+    private static IEnumerable<GraphNode> GetImplementors(
+        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
+        graph.InEdges(typeNode)
               .Where(e => e.Type == "IMPLEMENTS")
               .Select(e => e.Source);
 
     // A node is a member if it has at least one inbound CONTAINS edge.
-    private bool IsMemberNode(GraphNode node) =>
-        _graph.InEdges(node).Any(e => e.Type == "CONTAINS");
+    private static bool IsMemberNode(
+        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode node) =>
+        graph.InEdges(node).Any(e => e.Type == "CONTAINS");
 
     // Returns the declaring type of a member node via its inbound CONTAINS edge.
-    private GraphNode? GetDeclaringType(GraphNode memberNode) =>
-        _graph.InEdges(memberNode)
+    private static GraphNode? GetDeclaringType(
+        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode memberNode) =>
+        graph.InEdges(memberNode)
               .FirstOrDefault(e => e.Type == "CONTAINS")
               ?.Source;
 
@@ -319,17 +392,18 @@ public class GraphStore
     /// </summary>
     public IReadOnlyList<string> GetInterfacesWithNoImplementations(IEnumerable<string> interfaceIds)
     {
+        var s = _state;
         var result = new List<string>();
 
         foreach (var id in interfaceIds)
         {
-            if (!_nodeById.TryGetValue(id, out var node))
+            if (!s.NodeById.TryGetValue(id, out var node))
                 continue;
 
             if (node.Kind != "Interface")
                 continue;
 
-            var hasImplementation = _graph.InEdges(node).Any(e => e.Type == "IMPLEMENTS");
+            var hasImplementation = s.Graph.InEdges(node).Any(e => e.Type == "IMPLEMENTS");
             if (!hasImplementation)
                 result.Add(id);
         }
@@ -343,16 +417,17 @@ public class GraphStore
     /// </summary>
     public IReadOnlyList<string> ShortestPath(string sourceId, string targetId)
     {
-        if (!_nodeById.TryGetValue(sourceId, out var sourceNode))
+        var s = _state;
+        if (!s.NodeById.TryGetValue(sourceId, out var sourceNode))
             return [];
 
-        if (!_nodeById.TryGetValue(targetId, out var targetNode))
+        if (!s.NodeById.TryGetValue(targetId, out var targetNode))
             return [];
 
         if (sourceNode.Equals(targetNode))
             return [sourceId];
 
-        var tryGetPaths = _graph.ShortestPathsDijkstra(_ => 1.0, sourceNode);
+        var tryGetPaths = s.Graph.ShortestPathsDijkstra(_ => 1.0, sourceNode);
 
         if (!tryGetPaths(targetNode, out var edges))
             return [];
@@ -370,40 +445,49 @@ public class GraphStore
     /// </summary>
     public string Serialize()
     {
+        var s = _state;
         var payload = new GraphPayload(
-            Nodes: _graph.Vertices.Select(n => new NodeDto(n.Id, n.Kind)).ToList(),
-            Edges: _graph.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList());
+            Nodes: s.Graph.Vertices.Select(n => new NodeDto(n.Id, n.Kind)).ToList(),
+            Edges: s.Graph.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList());
 
         return JsonSerializer.Serialize(payload, SerializerOptions);
     }
 
     /// <summary>
     /// Replaces the current in-memory graph with the one deserialized from <paramref name="json"/>.
+    /// Builds into a fresh local State and publishes it atomically; on any throw the previous
+    /// graph is left untouched (no half-cleared store).
     /// </summary>
     public void Deserialize(string json)
     {
         var payload = JsonSerializer.Deserialize<GraphPayload>(json, SerializerOptions)
             ?? throw new JsonException("Graph payload deserialized to null.");
 
-        Clear();
+        var newState = new State();
 
         foreach (var n in payload.Nodes)
-            AddNode(new GraphNode(n.Id, n.Kind));
+        {
+            var node = new GraphNode(n.Id, n.Kind);
+            newState.Graph.AddVertex(node);
+            newState.NodeById[n.Id] = node;
+        }
 
         foreach (var e in payload.Edges)
         {
-            if (_nodeById.TryGetValue(e.Source, out var src) &&
-                _nodeById.TryGetValue(e.Target, out var tgt))
+            if (newState.NodeById.TryGetValue(e.Source, out var src) &&
+                newState.NodeById.TryGetValue(e.Target, out var tgt))
             {
-                _graph.AddEdge(new GraphEdge(src, tgt, e.Type));
+                newState.Graph.AddEdge(new GraphEdge(src, tgt, e.Type));
             }
         }
+
+        _state = newState; // atomic publish
     }
 
     public void Clear()
     {
-        _graph = new BidirectionalGraph<GraphNode, GraphEdge>(allowParallelEdges: false);
-        _nodeById.Clear();
+        _staging = null;
+        _state = new State();
     }
 
     // Private DTOs used only for serialization — never exposed outside this class.

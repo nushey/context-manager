@@ -1003,4 +1003,74 @@ public class GraphStoreTests
         CollectionAssert.DoesNotContain(result.ToList(), "IService");
         CollectionAssert.DoesNotContain(result.ToList(), "IOrchestrator");
     }
+
+    // ── Concurrency: snapshot-swap (§1.1 / AC1) ───────────────────────────────
+    // Readers must never throw InvalidOperationException (collection modified) and never observe
+    // a half-built graph while a rebuild is staged; the committed snapshot must be visible after.
+
+    [TestMethod]
+    [Timeout(15_000)]
+    public void ConcurrentReaders_AmidRebuild_NeverThrowAndObserveCommittedSnapshot()
+    {
+        var store = BuildSampleGraph();
+
+        Exception? readerException = null;
+        var writerDone = new ManualResetEventSlim(false);
+
+        // Multiple readers hammer reads for the whole rebuild window.
+        var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        {
+            try
+            {
+                var spin = new SpinWait();
+                while (!writerDone.IsSet)
+                {
+                    store.GetAggregatedNeighbors("A");
+                    store.ShortestPath("A", "C");
+                    _ = store.NodeCount;
+                    spin.SpinOnce();
+                }
+            }
+            catch (Exception ex)
+            {
+                readerException = ex;
+            }
+        })).ToArray();
+
+        // One writer: stage a rebuild, build a much larger graph into staging, then commit.
+        // While staging, the published _state is untouched, so readers keep seeing A..D.
+        var writer = Task.Run(() =>
+        {
+            store.BeginRebuild();
+            store.AddNode(new GraphNode("A", "Class"));
+            store.AddNode(new GraphNode("B", "Class"));
+            store.AddNode(new GraphNode("C", "Class"));
+            store.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
+            store.AddEdge(new GraphEdge(new GraphNode("B", "Class"), new GraphNode("C", "Class"), "CALLS"));
+
+            for (var i = 0; i < 300; i++)
+            {
+                store.AddNode(new GraphNode($"N{i}", "Class"));
+                store.AddEdge(new GraphEdge(
+                    new GraphNode("C", "Class"),
+                    new GraphNode($"N{i}", "Class"),
+                    "CALLS"));
+            }
+
+            store.CommitRebuild();
+            writerDone.Set();
+        });
+
+        Task.WaitAll(readers);
+        writer.Wait();
+
+        Assert.IsNull(readerException,
+            $"Readers must not throw during a concurrent rebuild. Got: {readerException}");
+
+        // The committed snapshot must be visible to a post-commit read.
+        Assert.IsTrue(store.NodeCount >= 300, "Committed rebuild must be visible after CommitRebuild.");
+        var neighbors = store.GetAggregatedNeighbors("A");
+        Assert.IsTrue(neighbors.Any(n => n.Id == "B"),
+            "Post-commit read must see the rebuilt graph (A → B).");
+    }
 }

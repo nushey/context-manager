@@ -19,38 +19,50 @@ public class GraphBuilder
 
     public async Task<GraphStore> BuildAsync(string solutionPath, CancellationToken ct = default)
     {
-        _store.Clear();
-
-        using var workspace = MSBuildWorkspace.Create();
-        var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
-
-        foreach (var project in solution.Projects)
+        // Rebuild into a staging snapshot; readers keep observing the previous graph until
+        // CommitRebuild publishes the new one. On failure, AbortRebuild preserves the previous
+        // graph and releases the writer lock so the next scan does not deadlock.
+        _store.BeginRebuild();
+        try
         {
-            var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
-            if (compilation is null)
-                continue;
+            using var workspace = MSBuildWorkspace.Create();
+            var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
 
-            foreach (var document in project.Documents)
+            foreach (var project in solution.Projects)
             {
-                if (!IsSourceDocument(document.FilePath))
+                var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
+                if (compilation is null)
                     continue;
 
-                var syntaxTree = await document.GetSyntaxTreeAsync(ct);
-                if (syntaxTree is null)
-                    continue;
+                foreach (var document in project.Documents)
+                {
+                    if (!IsSourceDocument(document.FilePath))
+                        continue;
 
-                var root = await syntaxTree.GetRootAsync(ct) as CompilationUnitSyntax;
-                if (root is null)
-                    continue;
+                    var syntaxTree = await document.GetSyntaxTreeAsync(ct);
+                    if (syntaxTree is null)
+                        continue;
 
-                var model = compilation.GetSemanticModel(syntaxTree);
+                    var root = await syntaxTree.GetRootAsync(ct) as CompilationUnitSyntax;
+                    if (root is null)
+                        continue;
 
-                HarvestNodes(model, root, ct);
+                    var model = compilation.GetSemanticModel(syntaxTree);
 
-                var edges = _edgeExtractor.Extract(model, root, ct);
-                foreach (var edge in edges)
-                    _store.AddEdge(edge);
+                    HarvestNodes(model, root, ct);
+
+                    var edges = _edgeExtractor.Extract(model, root, ct);
+                    foreach (var edge in edges)
+                        _store.AddEdge(edge);
+                }
             }
+
+            _store.CommitRebuild();
+        }
+        catch
+        {
+            _store.AbortRebuild();
+            throw;
         }
 
         return _store;
