@@ -220,16 +220,50 @@ public class GraphStore
         IReadOnlySet<string> edgeTypes,
         out IReadOnlyList<string> bridgedInterfaceIds,
         CancellationToken ct = default)
+        => ImpactBackwardCore(nodeId, edgeTypes, maxResults: null, out _, out bridgedInterfaceIds, ct);
+
+    /// <summary>
+    /// Capped variant of <see cref="ImpactBackward(string, IReadOnlySet{string}, out IReadOnlyList{string}, CancellationToken)"/>.
+    /// Runs the full BFS (so visit order and <paramref name="bridgedInterfaceIds"/> stay deterministic)
+    /// but stops appending to the returned list once it reaches <paramref name="maxResults"/> entries.
+    /// <paramref name="truncated"/> is set to <c>true</c> when at least one additional reachable type
+    /// was dropped due to the cap. The returned ids are the BFS-ordered prefix (no reordering).
+    /// </summary>
+    public IReadOnlyList<string> ImpactBackward(
+        string nodeId,
+        IReadOnlySet<string> edgeTypes,
+        int maxResults,
+        out bool truncated,
+        out IReadOnlyList<string> bridgedInterfaceIds,
+        CancellationToken ct = default)
+        => ImpactBackwardCore(nodeId, edgeTypes, maxResults, out truncated, out bridgedInterfaceIds, ct);
+
+    /// <summary>
+    /// Overload without the <c>bridgedInterfaceIds</c> out parameter — convenience for callers
+    /// that do not need diagnostic data.
+    /// </summary>
+    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes) =>
+        ImpactBackward(nodeId, edgeTypes, out _);
+
+    private IReadOnlyList<string> ImpactBackwardCore(
+        string nodeId,
+        IReadOnlySet<string> edgeTypes,
+        int? maxResults,
+        out bool truncated,
+        out IReadOnlyList<string> bridgedInterfaceIds,
+        CancellationToken ct = default)
     {
         var s = _state;
         if (!s.NodeById.TryGetValue(nodeId, out var startNode))
         {
+            truncated = false;
             bridgedInterfaceIds = [];
             return [];
         }
 
         var graph = s.Graph;
         var bridged = new List<string>();
+        var hitCap = false;
 
         // Build seed: start node + its members + implemented interfaces + their members.
         var seeds = new List<GraphNode> { startNode };
@@ -247,6 +281,20 @@ public class GraphStore
         var queue = new Queue<GraphNode>(seeds);
         var reportedTypes = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<string>();
+
+        // The traversal always visits the full reachable set so visit order (and thus the capped
+        // prefix) and bridgedInterfaceIds stay deterministic regardless of maxResults. The cap only
+        // bounds the result list; a dropped qualifying type flips `truncated`.
+        void Record(string reportId)
+        {
+            if (seedIds.Contains(reportId) || !reportedTypes.Add(reportId))
+                return;
+
+            if (!maxResults.HasValue || result.Count < maxResults.Value)
+                result.Add(reportId);
+            else
+                hitCap = true;
+        }
 
         while (queue.Count > 0)
         {
@@ -291,8 +339,7 @@ public class GraphStore
                     ? GetDeclaringType(graph, implementor)?.Id ?? implementor.Id
                     : implementor.Id;
 
-                if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
-                    result.Add(reportId);
+                Record(reportId);
             }
 
             foreach (var edge in graph.InEdges(current))
@@ -312,21 +359,14 @@ public class GraphStore
                     ? GetDeclaringType(graph, caller)?.Id ?? caller.Id
                     : caller.Id;
 
-                if (!seedIds.Contains(reportId) && reportedTypes.Add(reportId))
-                    result.Add(reportId);
+                Record(reportId);
             }
         }
 
         bridgedInterfaceIds = bridged;
+        truncated = hitCap;
         return result;
     }
-
-    /// <summary>
-    /// Overload without the <c>bridgedInterfaceIds</c> out parameter — convenience for callers
-    /// that do not need diagnostic data.
-    /// </summary>
-    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes) =>
-        ImpactBackward(nodeId, edgeTypes, out _);
 
     /// <summary>
     /// Returns the IDs of interface nodes that <paramref name="nodeId"/> implements

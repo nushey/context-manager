@@ -1135,4 +1135,46 @@ public class GraphStoreTests
             // expected — cancellation propagated into the traversal loop.
         }
     }
+
+    // ── Impact cap (§3.1 / AC5) ──────────────────────────────────────────────
+    // The capped overload returns the BFS-ordered prefix and flips `truncated`; the uncapped
+    // overload is unchanged.
+
+    [TestMethod]
+    public void ImpactBackward_Capped_ReturnsPrefixAndSetsTruncated()
+    {
+        // 12-type chain: T(i) CONTAINS T(i).M, and T(i+1).M --CALLS--> T(i).M.
+        // ImpactBackward("T0") reaches T1..T11 (11 types) in BFS order.
+        var store = new GraphStore();
+        const int n = 12;
+        for (var i = 0; i < n; i++)
+        {
+            store.AddEdge(new GraphEdge(
+                new GraphNode($"T{i}", "Class"),
+                new GraphNode($"T{i}.M", "Method"),
+                "CONTAINS"));
+        }
+        for (var i = 0; i < n - 1; i++)
+        {
+            store.AddEdge(new GraphEdge(
+                new GraphNode($"T{i + 1}.M", "Method"),
+                new GraphNode($"T{i}.M", "Method"),
+                "CALLS"));
+        }
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+
+        // Capped: first 3 in BFS order, truncated flag set.
+        var capped = store.ImpactBackward("T0", edgeTypes, maxResults: 3, out var truncated, out _);
+        Assert.AreEqual(3, capped.Count);
+        Assert.IsTrue(truncated);
+        CollectionAssert.AreEqual(new[] { "T1", "T2", "T3" }, capped.ToList());
+
+        // Uncapped: the whole chain, unchanged.
+        var full = store.ImpactBackward("T0", edgeTypes);
+        Assert.AreEqual(11, full.Count);
+        CollectionAssert.AreEqual(
+            Enumerable.Range(1, 11).Select(i => $"T{i}").ToList(),
+            full.ToList());
+    }
 }

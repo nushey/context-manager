@@ -6,7 +6,8 @@ namespace ContextManager.Mcp.Serialization;
 /// </summary>
 public sealed record GraphImpactResult(
     IReadOnlyList<string> AffectedIds,
-    IReadOnlyList<GraphImpactDiagnostic> Diagnostics);
+    IReadOnlyList<GraphImpactDiagnostic> Diagnostics,
+    bool Truncated = false);
 
 /// <summary>
 /// A single diagnostic entry emitted when an interface in the analyzed scope
