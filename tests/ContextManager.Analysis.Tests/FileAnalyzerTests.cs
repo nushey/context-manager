@@ -1,7 +1,6 @@
 using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Models;
-using ContextManager.Mcp.Serialization;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ContextManager.Analysis.Tests;
@@ -9,6 +8,8 @@ namespace ContextManager.Analysis.Tests;
 [TestClass]
 public class FileAnalyzerTests
 {
+    private static readonly FileAnalyzer _analyzer = new();
+
     private static string FixturePath(string name)
         => Path.Combine(
             Path.GetDirectoryName(typeof(FileAnalyzerTests).Assembly.Location)!,
@@ -18,30 +19,28 @@ public class FileAnalyzerTests
     // ── Error paths ──────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_NonExistentPath_ReturnsFileNotFound()
+    public async Task Analyze_NonExistentPath_ReturnsFileNotFound()
     {
-        var result = FileAnalyzer.Analyze("/does/not/exist/foo.cs", CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync("/does/not/exist/foo.cs", CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(AnalysisError));
-        var error = (AnalysisError)result;
-        Assert.AreEqual("file_not_found", error.Code);
-        Assert.AreEqual("/does/not/exist/foo.cs", error.FilePath);
+        Assert.IsNotNull(result.Error);
+        Assert.AreEqual("file_not_found", result.Error!.Code);
+        Assert.AreEqual("/does/not/exist/foo.cs", result.Error.FilePath);
     }
 
     [TestMethod]
-    public void Analyze_NonCsExtension_ReturnsNotACsFile()
+    public async Task Analyze_NonCsExtension_ReturnsNotACsFile()
     {
         var tmp = Path.GetTempFileName();
         try
         {
             var txtPath = Path.ChangeExtension(tmp, ".txt");
             File.Move(tmp, txtPath);
-            var result = FileAnalyzer.Analyze(txtPath, CancellationToken.None);
+            var result = await _analyzer.AnalyzeAsync(txtPath, CancellationToken.None);
 
-            Assert.IsInstanceOfType(result, typeof(AnalysisError));
-            var error = (AnalysisError)result;
-            Assert.AreEqual("not_a_cs_file", error.Code);
-            Assert.AreEqual(txtPath, error.FilePath);
+            Assert.IsNotNull(result.Error);
+            Assert.AreEqual("not_a_cs_file", result.Error!.Code);
+            Assert.AreEqual(txtPath, result.Error.FilePath);
         }
         finally
         {
@@ -51,20 +50,22 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_UnparseableCSharp_ReturnsParseFailedWithFirstError()
+    public async Task Analyze_UnparseableCSharp_ReturnsFileAnalysisWithParseErrors()
     {
+        // Best-effort: a malformed file yields a FileAnalysis (salvaging whatever Roslyn parsed)
+        // with a populated parseErrors list, not an AnalysisError — unless the syntax root itself
+        // is unobtainable.
         var tmp = Path.ChangeExtension(Path.GetTempFileName(), ".cs");
         try
         {
             File.WriteAllText(tmp, "class Broken { public void Foo( { }");
-            var result = FileAnalyzer.Analyze(tmp, CancellationToken.None);
+            var result = await _analyzer.AnalyzeAsync(tmp, CancellationToken.None);
 
-            Assert.IsInstanceOfType(result, typeof(AnalysisError));
-            var error = (AnalysisError)result;
-            Assert.AreEqual("parse_failed", error.Code);
-            Assert.IsNotNull(error.Message);
-            Assert.IsTrue(error.Message.Length > 0);
-            Assert.AreEqual(tmp, error.FilePath);
+            Assert.IsNotNull(result.Analysis);
+            var analysis = result.Analysis!;
+            Assert.IsNotNull(analysis.ParseErrors);
+            Assert.IsTrue(analysis.ParseErrors!.Count > 0);
+            Assert.AreEqual(Path.GetFileName(tmp), analysis.File);
         }
         finally
         {
@@ -72,22 +73,30 @@ public class FileAnalyzerTests
         }
     }
 
+    [TestMethod]
+    public async Task Analyze_CleanFile_ParseErrorsIsNull()
+    {
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderStatus.cs"), CancellationToken.None);
+
+        Assert.IsNotNull(result.Analysis);
+        Assert.IsNull(result.Analysis!.ParseErrors);
+    }
+
     // ── Namespace: file-scoped ───────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_FileScopedNamespace_PopulatesNamespace()
+    public async Task Analyze_FileScopedNamespace_PopulatesNamespace()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderStatus.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderStatus.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
-        Assert.AreEqual("ContextManager.Analysis.Tests.Fixtures", analysis.Namespace);
+        Assert.IsNotNull(result.Analysis);
+        Assert.AreEqual("ContextManager.Analysis.Tests.Fixtures", result.Analysis!.Namespace);
     }
 
     // ── Namespace: classic block ──────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_ClassicBlockNamespace_PopulatesNamespace()
+    public async Task Analyze_ClassicBlockNamespace_PopulatesNamespace()
     {
         var tmp = Path.ChangeExtension(Path.GetTempFileName(), ".cs");
         try
@@ -98,11 +107,10 @@ public class FileAnalyzerTests
                     public class Foo { }
                 }
                 """);
-            var result = FileAnalyzer.Analyze(tmp, CancellationToken.None);
+            var result = await _analyzer.AnalyzeAsync(tmp, CancellationToken.None);
 
-            Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-            var analysis = (FileAnalysis)result;
-            Assert.AreEqual("My.Block.Namespace", analysis.Namespace);
+            Assert.IsNotNull(result.Analysis);
+            Assert.AreEqual("My.Block.Namespace", result.Analysis!.Namespace);
         }
         finally
         {
@@ -113,12 +121,12 @@ public class FileAnalyzerTests
     // ── Usings ───────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_ServiceWithDependencies_UsingsInDeclarationOrder()
+    public async Task Analyze_ServiceWithDependencies_UsingsInDeclarationOrder()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         Assert.AreEqual(1, analysis.Usings.Count);
         Assert.AreEqual("System.Threading", analysis.Usings[0]);
     }
@@ -126,12 +134,12 @@ public class FileAnalyzerTests
     // ── ServiceWithDependencies ───────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_ServiceWithDependencies_ConstructorDependencies()
+    public async Task Analyze_ServiceWithDependencies_ConstructorDependencies()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
         Assert.AreEqual(2, type.ConstructorDependencies.Count);
         Assert.AreEqual("IOrderRepository", type.ConstructorDependencies[0].Type);
@@ -141,12 +149,12 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_PrimaryCtorClass_ConstructorDependencies()
+    public async Task Analyze_PrimaryCtorClass_ConstructorDependencies()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("PrimaryCtorService.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("PrimaryCtorService.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "PrimaryCtorService");
         Assert.IsNotNull(type.ConstructorDependencies);
         Assert.AreEqual(2, type.ConstructorDependencies!.Count);
@@ -157,24 +165,24 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_ServiceWithDependencies_MethodAttributes()
+    public async Task Analyze_ServiceWithDependencies_MethodAttributes()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
         var processOrder = type.Methods.First(m => m.Name == "ProcessOrder");
         Assert.IsTrue(processOrder.Attributes.Any(a => a.Contains("Authorize")));
     }
 
     [TestMethod]
-    public void Analyze_ServiceWithDependencies_PrivateMethodExcluded()
+    public async Task Analyze_ServiceWithDependencies_PrivateMethodExcluded()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
         Assert.IsFalse(type.Methods.Any(m => m.Name == "InternalHelper"));
     }
@@ -182,23 +190,23 @@ public class FileAnalyzerTests
     // ── OrderServiceInterface ─────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_OrderServiceInterface_KindIsInterface()
+    public async Task Analyze_OrderServiceInterface_KindIsInterface()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderServiceInterface.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderServiceInterface.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "IOrderService");
         Assert.AreEqual("interface", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_OrderServiceInterface_MethodList()
+    public async Task Analyze_OrderServiceInterface_MethodList()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderServiceInterface.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderServiceInterface.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "IOrderService");
         Assert.AreEqual(2, type.Methods.Count);
         Assert.AreEqual("Process", type.Methods[0].Name);
@@ -208,23 +216,23 @@ public class FileAnalyzerTests
     // ── CreateOrderRecord ─────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_CreateOrderRecord_KindIsRecord()
+    public async Task Analyze_CreateOrderRecord_KindIsRecord()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRecord");
         Assert.AreEqual("record", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_CreateOrderRecord_PrimaryConstructorInConstructorDependencies()
+    public async Task Analyze_CreateOrderRecord_PrimaryConstructorInConstructorDependencies()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRecord");
         Assert.AreEqual(3, type.ConstructorDependencies.Count);
         Assert.AreEqual("string", type.ConstructorDependencies[0].Type);
@@ -236,12 +244,12 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_CreateOrderRecord_PrimaryConstructorNotInMethods()
+    public async Task Analyze_CreateOrderRecord_PrimaryConstructorNotInMethods()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRecord");
         Assert.IsFalse(type.Methods?.Any(m => m.Name == "CreateOrderRecord") == true);
     }
@@ -249,23 +257,23 @@ public class FileAnalyzerTests
     // ── Money (struct) ────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_Money_KindIsStruct()
+    public async Task Analyze_Money_KindIsStruct()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("Money.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("Money.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "Money");
         Assert.AreEqual("struct", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_Money_PropertiesPopulated()
+    public async Task Analyze_Money_PropertiesPopulated()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("Money.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("Money.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "Money");
         Assert.AreEqual(2, type.Properties.Count);
         Assert.AreEqual("Amount", type.Properties[0].Name);
@@ -275,23 +283,23 @@ public class FileAnalyzerTests
     // ── OrderStatus (enum) ────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_OrderStatus_KindIsEnum()
+    public async Task Analyze_OrderStatus_KindIsEnum()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderStatus.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderStatus.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "OrderStatus");
         Assert.AreEqual("enum", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_OrderStatus_MembersNamesOnly()
+    public async Task Analyze_OrderStatus_MembersNamesOnly()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderStatus.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderStatus.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "OrderStatus");
         Assert.IsNotNull(type.Members);
         CollectionAssert.AreEqual(
@@ -302,23 +310,23 @@ public class FileAnalyzerTests
     // ── DTO branch (a): no methods ────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_DtoByNoMethods_KindIsDto()
+    public async Task Analyze_DtoByNoMethods_KindIsDto()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("DtoByNoMethods.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("DtoByNoMethods.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "OrderSummary");
         Assert.AreEqual("dto", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_DtoByNoMethods_PropertiesEmpty()
+    public async Task Analyze_DtoByNoMethods_PropertiesEmpty()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("DtoByNoMethods.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("DtoByNoMethods.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "OrderSummary");
         Assert.IsNull(type.Properties);
     }
@@ -326,23 +334,23 @@ public class FileAnalyzerTests
     // ── DTO branch (b): parameterless ctor + auto-properties ─────────────────
 
     [TestMethod]
-    public void Analyze_DtoByAutoProperties_KindIsDto()
+    public async Task Analyze_DtoByAutoProperties_KindIsDto()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("DtoByAutoProperties.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("DtoByAutoProperties.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CustomerInfo");
         Assert.AreEqual("dto", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_DtoByAutoProperties_PropertiesEmpty()
+    public async Task Analyze_DtoByAutoProperties_PropertiesEmpty()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("DtoByAutoProperties.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("DtoByAutoProperties.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CustomerInfo");
         Assert.IsNull(type.Properties);
     }
@@ -350,23 +358,23 @@ public class FileAnalyzerTests
     // ── DTO branch (c): suffix-based ──────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_CreateOrderRequest_KindIsDto()
+    public async Task Analyze_CreateOrderRequest_KindIsDto()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("CreateOrderRequest.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRequest.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRequest");
         Assert.AreEqual("dto", type.Kind);
     }
 
     [TestMethod]
-    public void Analyze_CreateOrderRequest_PropertiesEmpty()
+    public async Task Analyze_CreateOrderRequest_PropertiesEmpty()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("CreateOrderRequest.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRequest.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRequest");
         Assert.IsNull(type.Properties);
     }
@@ -374,24 +382,24 @@ public class FileAnalyzerTests
     // ── Generic types: name with type parameters + type-level constraints ────
 
     [TestMethod]
-    public void Analyze_GenericClass_NameIncludesTypeParameters()
+    public async Task Analyze_GenericClass_NameIncludesTypeParameters()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("GenericTypes.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         Assert.IsTrue(analysis.Types.Any(t => t.Name == "GenericRepository<TEntity>"),
             $"Expected 'GenericRepository<TEntity>'. Got: [{string.Join(", ", analysis.Types.Select(t => t.Name))}]");
         Assert.IsTrue(analysis.Types.Any(t => t.Name == "IRepository<TEntity>"));
     }
 
     [TestMethod]
-    public void Analyze_GenericClass_TypeLevelGenericConstraints()
+    public async Task Analyze_GenericClass_TypeLevelGenericConstraints()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("GenericTypes.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "GenericRepository<TEntity>");
         Assert.IsNotNull(type.GenericConstraints);
         Assert.AreEqual(1, type.GenericConstraints!.Count);
@@ -399,12 +407,12 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_GenericClass_MultipleConstraintClausesInDeclarationOrder()
+    public async Task Analyze_GenericClass_MultipleConstraintClausesInDeclarationOrder()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("GenericTypes.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "EntityMapper<TSource, TResult>");
         Assert.IsNotNull(type.GenericConstraints);
         Assert.AreEqual(2, type.GenericConstraints!.Count);
@@ -413,40 +421,40 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_NonGenericType_NameUnchangedAndConstraintsNull()
+    public async Task Analyze_NonGenericType_NameUnchangedAndConstraintsNull()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
         Assert.IsNull(type.GenericConstraints);
     }
 
     [TestMethod]
-    public void Analyze_GenericDtoSuffix_BareIdentifierDrivesDtoHeuristic()
+    public async Task Analyze_GenericDtoSuffix_BareIdentifierDrivesDtoHeuristic()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("GenericTypes.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("GenericTypes.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "PagedResponse<T>");
         Assert.AreEqual("dto", type.Kind);
     }
 
     // ── Method modifiers + property accessors ─────────────────────────────────
 
-    private static TypeInfo AnalyzeMemberDetailShowcase()
+    private static async Task<TypeInfo> AnalyzeMemberDetailShowcase()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("MemberDetailShowcase.cs"), CancellationToken.None);
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        return ((FileAnalysis)result).Types.First(t => t.Name == "MemberDetailShowcase");
+        var result = await _analyzer.AnalyzeAsync(FixturePath("MemberDetailShowcase.cs"), CancellationToken.None);
+        Assert.IsNotNull(result.Analysis);
+        return result.Analysis!.Types.First(t => t.Name == "MemberDetailShowcase");
     }
 
     [TestMethod]
-    public void Analyze_MethodModifiers_NonAccessModifiersInDeclarationOrder()
+    public async Task Analyze_MethodModifiers_NonAccessModifiersInDeclarationOrder()
     {
-        var type = AnalyzeMemberDetailShowcase();
+        var type = await AnalyzeMemberDetailShowcase();
 
         CollectionAssert.AreEqual(new[] { "async" },
             type.Methods!.First(m => m.Name == "LoadAsync").Modifiers!.ToArray());
@@ -461,17 +469,17 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_MethodWithoutNonAccessModifiers_ModifiersNull()
+    public async Task Analyze_MethodWithoutNonAccessModifiers_ModifiersNull()
     {
-        var type = AnalyzeMemberDetailShowcase();
+        var type = await AnalyzeMemberDetailShowcase();
 
         Assert.IsNull(type.Methods!.First(m => m.Name == "Plain").Modifiers);
     }
 
     [TestMethod]
-    public void Analyze_PropertyAccessors_RenderedInCSharpSyntax()
+    public async Task Analyze_PropertyAccessors_RenderedInCSharpSyntax()
     {
-        var type = AnalyzeMemberDetailShowcase();
+        var type = await AnalyzeMemberDetailShowcase();
 
         Assert.AreEqual("get; set;", type.Properties!.First(p => p.Name == "GetSet").Accessors);
         Assert.AreEqual("get; init;", type.Properties!.First(p => p.Name == "GetInit").Accessors);
@@ -479,9 +487,9 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_ExpressionBodiedProperty_AccessorsIsGetOnly()
+    public async Task Analyze_ExpressionBodiedProperty_AccessorsIsGetOnly()
     {
-        var type = AnalyzeMemberDetailShowcase();
+        var type = await AnalyzeMemberDetailShowcase();
 
         Assert.AreEqual("get;", type.Properties!.First(p => p.Name == "ExpressionBodied").Accessors);
     }
@@ -489,12 +497,12 @@ public class FileAnalyzerTests
     // ── Explicit interface implementations ────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_ExplicitInterfaceMethod_QualifiedNameAndPublicAccess()
+    public async Task Analyze_ExplicitInterfaceMethod_QualifiedNameAndPublicAccess()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
         var method = type.Methods!.FirstOrDefault(m => m.Name == "IAuditable.Audit");
         Assert.IsNotNull(method,
@@ -503,12 +511,12 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_ExplicitInterfaceProperty_QualifiedNameAndPublicAccess()
+    public async Task Analyze_ExplicitInterfaceProperty_QualifiedNameAndPublicAccess()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
         var prop = type.Properties!.FirstOrDefault(p => p.Name == "IAuditable.AuditLabel");
         Assert.IsNotNull(prop,
@@ -520,24 +528,24 @@ public class FileAnalyzerTests
     // ── Base-vs-interface heuristic ───────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_IPlusLowercaseBaseType_ReportedAsBaseNotImplements()
+    public async Task Analyze_IPlusLowercaseBaseType_ReportedAsBaseNotImplements()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("IndexManagerCache.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("IndexManagerCache.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "IndexManagerCache");
         Assert.AreEqual("IndexManager", type.Base);
         Assert.IsNull(type.Implements);
     }
 
     [TestMethod]
-    public void Analyze_IPlusUppercaseFirstEntry_StillImplements()
+    public async Task Analyze_IPlusUppercaseFirstEntry_StillImplements()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ExplicitContractService.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ExplicitContractService");
         Assert.IsNull(type.Base);
         CollectionAssert.AreEqual(new[] { "IAuditable" }, type.Implements!.ToArray());
@@ -546,12 +554,12 @@ public class FileAnalyzerTests
     // ── Public events ─────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_PublicEvents_FieldAndAccessorFormsInDeclarationOrder()
+    public async Task Analyze_PublicEvents_FieldAndAccessorFormsInDeclarationOrder()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("EventPublisher.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "EventPublisher");
         Assert.IsNotNull(type.Events);
         CollectionAssert.AreEqual(
@@ -566,23 +574,23 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public void Analyze_PrivateEvent_Excluded()
+    public async Task Analyze_PrivateEvent_Excluded()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("EventPublisher.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("EventPublisher.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "EventPublisher");
         Assert.IsFalse(type.Events!.Any(e => e.Name == "InternalOnly"));
     }
 
     [TestMethod]
-    public void Analyze_TypeWithoutEvents_EventsIsNull()
+    public async Task Analyze_TypeWithoutEvents_EventsIsNull()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("ServiceWithDependencies.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
+        Assert.IsNotNull(result.Analysis);
+        var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "ServiceWithDependencies");
         Assert.IsNull(type.Events);
     }
@@ -590,27 +598,26 @@ public class FileAnalyzerTests
     // ── File metadata ─────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void Analyze_ReturnsCorrectFileName()
+    public async Task Analyze_ReturnsCorrectFileName()
     {
-        var result = FileAnalyzer.Analyze(FixturePath("OrderStatus.cs"), CancellationToken.None);
+        var result = await _analyzer.AnalyzeAsync(FixturePath("OrderStatus.cs"), CancellationToken.None);
 
-        Assert.IsInstanceOfType(result, typeof(FileAnalysis));
-        var analysis = (FileAnalysis)result;
-        Assert.AreEqual("OrderStatus.cs", analysis.File);
+        Assert.IsNotNull(result.Analysis);
+        Assert.AreEqual("OrderStatus.cs", result.Analysis!.File);
     }
 
     // ── Determinism ───────────────────────────────────────────────────────────
 
     [TestMethod]
-    public void FileAnalyzer_IsDeterministic()
+    public async Task FileAnalyzer_IsDeterministic()
     {
         var path = FixturePath("ServiceWithDependencies.cs");
 
-        var first = FileAnalyzer.Analyze(path, CancellationToken.None);
-        var second = FileAnalyzer.Analyze(path, CancellationToken.None);
+        var first = await _analyzer.AnalyzeAsync(path, CancellationToken.None);
+        var second = await _analyzer.AnalyzeAsync(path, CancellationToken.None);
 
-        var json1 = JsonSerializer.Serialize(first, AnalysisJson.Options);
-        var json2 = JsonSerializer.Serialize(second, AnalysisJson.Options);
+        var json1 = JsonSerializer.Serialize(first.Analysis, AnalysisJson.Options);
+        var json2 = JsonSerializer.Serialize(second.Analysis, AnalysisJson.Options);
 
         Assert.AreEqual(json1, json2);
     }

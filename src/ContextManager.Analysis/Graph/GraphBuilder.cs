@@ -19,38 +19,50 @@ public class GraphBuilder
 
     public async Task<GraphStore> BuildAsync(string solutionPath, CancellationToken ct = default)
     {
-        _store.Clear();
-
-        using var workspace = MSBuildWorkspace.Create();
-        var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
-
-        foreach (var project in solution.Projects)
+        // Rebuild into a staging snapshot; readers keep observing the previous graph until
+        // CommitRebuild publishes the new one. On failure, AbortRebuild preserves the previous
+        // graph and releases the writer lock so the next scan does not deadlock.
+        _store.BeginRebuild();
+        try
         {
-            var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
-            if (compilation is null)
-                continue;
+            using var workspace = MSBuildWorkspace.Create();
+            var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
 
-            foreach (var document in project.Documents)
+            foreach (var project in solution.Projects)
             {
-                if (!IsSourceDocument(document.FilePath))
+                var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
+                if (compilation is null)
                     continue;
 
-                var syntaxTree = await document.GetSyntaxTreeAsync(ct);
-                if (syntaxTree is null)
-                    continue;
+                foreach (var document in project.Documents)
+                {
+                    if (!IsSourceDocument(document.FilePath))
+                        continue;
 
-                var root = await syntaxTree.GetRootAsync(ct) as CompilationUnitSyntax;
-                if (root is null)
-                    continue;
+                    var syntaxTree = await document.GetSyntaxTreeAsync(ct);
+                    if (syntaxTree is null)
+                        continue;
 
-                var model = compilation.GetSemanticModel(syntaxTree);
+                    var root = await syntaxTree.GetRootAsync(ct) as CompilationUnitSyntax;
+                    if (root is null)
+                        continue;
 
-                HarvestNodes(model, root, ct);
+                    var model = compilation.GetSemanticModel(syntaxTree);
 
-                var edges = _edgeExtractor.Extract(model, root, ct);
-                foreach (var edge in edges)
-                    _store.AddEdge(edge);
+                    HarvestNodes(model, root, ct);
+
+                    var edges = _edgeExtractor.Extract(model, root, ct);
+                    foreach (var edge in edges)
+                        _store.AddEdge(edge);
+                }
             }
+
+            _store.CommitRebuild();
+        }
+        catch
+        {
+            _store.AbortRebuild();
+            throw;
         }
 
         return _store;
@@ -80,14 +92,18 @@ public class GraphBuilder
                     {
                         var methodSymbol = model.GetDeclaredSymbol(methodDecl, ct) as IMethodSymbol;
                         if (methodSymbol is null) continue;
-                        _store.AddNode(new GraphNode(methodSymbol.ToDisplayString(), "Method"));
+                        var methodNode = NodeClassifier.NodeFor(methodSymbol);
+                        if (methodNode is not null)
+                            _store.AddNode(methodNode);
                         break;
                     }
                     case PropertyDeclarationSyntax propertyDecl:
                     {
                         var propSymbol = model.GetDeclaredSymbol(propertyDecl, ct) as IPropertySymbol;
                         if (propSymbol is null) continue;
-                        _store.AddNode(new GraphNode(propSymbol.ToDisplayString(), "Property"));
+                        var propNode = NodeClassifier.NodeFor(propSymbol);
+                        if (propNode is not null)
+                            _store.AddNode(propNode);
                         break;
                     }
                 }
@@ -95,32 +111,25 @@ public class GraphBuilder
         }
     }
 
-    private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol)
-    {
-        var kind = symbol switch
-        {
-            { TypeKind: TypeKind.Interface } => "Interface",
-            { IsRecord: true } => "Record",
-            { TypeKind: TypeKind.Class } => "Class",
-            { TypeKind: TypeKind.Struct } => "Class",
-            _ => null
-        };
+    private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol) => NodeClassifier.NodeFor(symbol);
 
-        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
-    }
-
-    private static bool IsSourceDocument(string? filePath)
+    internal static bool IsSourceDocument(string? filePath)
     {
         if (string.IsNullOrEmpty(filePath))
             return false;
 
-        if (filePath.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
+        // Normalize once so the obj/bin checks work regardless of whether the path uses the
+        // platform separator or the alternate one (Roslyn may hand us forward-slash paths on Windows).
+        var p = filePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+        if (p.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (filePath.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        var sep = Path.DirectorySeparatorChar;
+        if (p.Contains($"{sep}obj{sep}", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (filePath.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        if (p.Contains($"{sep}bin{sep}", StringComparison.OrdinalIgnoreCase))
             return false;
 
         return true;

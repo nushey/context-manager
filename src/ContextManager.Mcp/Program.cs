@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
 builder.Services
+    .AddSingleton<FileAnalyzer>()
     .AddSingleton<CrossReferenceResolver>()
     .AddSingleton<ContextAnalyzer>()
     .AddSingleton<GraphStore>()
@@ -22,8 +23,16 @@ var host = builder.Build();
 var graphPath = ResolveGraphPath(args);
 if (graphPath is not null && File.Exists(graphPath))
 {
-    var store = host.Services.GetRequiredService<GraphStore>();
-    store.Deserialize(await File.ReadAllTextAsync(graphPath));
+    try
+    {
+        var store = host.Services.GetRequiredService<GraphStore>();
+        store.Deserialize(await File.ReadAllTextAsync(graphPath));
+    }
+    catch (Exception ex)
+    {
+        // stderr is safe under the MCP stdio protocol — stdout is reserved for JSON-RPC frames.
+        Console.Error.WriteLine($"Failed to load graph cache from '{graphPath}': {ex.Message}. Continuing with an empty graph.");
+    }
 }
 
 await host.RunAsync();

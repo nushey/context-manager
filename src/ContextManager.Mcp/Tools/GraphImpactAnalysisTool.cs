@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
 using ContextManager.Mcp.Serialization;
@@ -27,9 +28,12 @@ public sealed class GraphImpactAnalysisTool
         "Member nodes reached during traversal are rolled up to their declaring type. " +
         "Returns an object with 'affectedIds' (ordered list of impacted type IDs) and 'diagnostics' " +
         "(warning entries for interfaces in scope that have zero in-graph implementations — " +
-        "a probable reflection or dynamic-dispatch blind spot where the impact set may be incomplete).")]
+        "a probable reflection or dynamic-dispatch blind spot where the impact set may be incomplete). " +
+        "When 'maxResults' is set, 'affectedIds' is capped to that many BFS-ordered entries and a boolean " +
+        "'truncated' flag indicates whether additional reachable types were omitted.")]
     public Task<string> GraphImpactAnalysisAsync(
         [Description("The ISymbol.ToDisplayString() ID of the node to analyze for impact.")] string nodeId,
+        [Description("Optional cap on the number of affectedIds returned. The full BFS still runs to keep the result deterministic; when the cap is hit, the returned ids are the BFS-ordered prefix and 'truncated' is set to true. Omit for the complete impact set.")] int? maxResults = null,
         CancellationToken ct = default)
     {
         if (!_store.TryGetNode(nodeId, out var startNode))
@@ -37,9 +41,20 @@ public sealed class GraphImpactAnalysisTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options));
 
-        var affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out var bridgedInterfaceIds);
+        IReadOnlyList<string> affectedIds;
+        bool truncated;
+        IReadOnlyList<string> bridgedInterfaceIds;
+
+        if (maxResults.HasValue)
+            affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, maxResults.Value, out truncated, out bridgedInterfaceIds, ct);
+        else
+        {
+            affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out bridgedInterfaceIds, ct);
+            truncated = false;
+        }
+
         var diagnostics = BuildReflectionDiagnostics(startNode!, nodeId, bridgedInterfaceIds);
-        var result = new GraphImpactResult(affectedIds, diagnostics);
+        var result = new GraphImpactResult(affectedIds, diagnostics, truncated);
 
         return Task.FromResult(JsonSerializer.Serialize(result, AnalysisJson.Options));
     }

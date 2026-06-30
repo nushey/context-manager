@@ -13,4 +13,8 @@
         <PackageReference Include="QuikGraph" Version="2.5.0" />
     </ItemGroup>
 
+    <ItemGroup>
+        <InternalsVisibleTo Include="ContextManager.Analysis.Tests" />
+    </ItemGroup>
+
 </Project>

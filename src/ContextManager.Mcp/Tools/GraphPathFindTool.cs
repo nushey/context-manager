@@ -1,8 +1,8 @@
 using System.ComponentModel;
 using System.Text.Json;
+using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
-using ContextManager.Mcp.Serialization;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -33,7 +33,7 @@ public sealed class GraphPathFindTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {targetId}", targetId),
                 AnalysisJson.Options));
 
-        var path = _store.ShortestPath(sourceId, targetId);
+        var path = _store.ShortestPath(sourceId, targetId, ct);
 
         if (path.Count == 0)
             return Task.FromResult(JsonSerializer.Serialize(

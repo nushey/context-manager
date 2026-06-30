@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
-using ContextManager.Mcp.Serialization;
 using ContextManager.Mcp.Tools;
 using Microsoft.Build.Locator;
 using Microsoft.VisualStudio.TestTools.UnitTesting;

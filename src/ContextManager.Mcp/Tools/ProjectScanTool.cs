@@ -1,8 +1,8 @@
 using System.ComponentModel;
 using System.Text.Json;
+using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
-using ContextManager.Mcp.Serialization;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -51,7 +51,8 @@ public sealed class ProjectScanTool
         {
             await _builder.BuildAsync(solutionPath, ct);
 
-            var outputDir = Path.Combine(Path.GetDirectoryName(solutionPath)!, ".context-manager");
+            var dir = Path.GetDirectoryName(solutionPath) ?? string.Empty;
+            var outputDir = Path.Combine(dir, ".context-manager");
             Directory.CreateDirectory(outputDir);
 
             var graphJsonPath = Path.Combine(outputDir, "graph.json");
