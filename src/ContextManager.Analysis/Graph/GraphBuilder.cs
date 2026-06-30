@@ -113,18 +113,23 @@ public class GraphBuilder
 
     private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol) => NodeClassifier.NodeFor(symbol);
 
-    private static bool IsSourceDocument(string? filePath)
+    internal static bool IsSourceDocument(string? filePath)
     {
         if (string.IsNullOrEmpty(filePath))
             return false;
 
-        if (filePath.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
+        // Normalize once so the obj/bin checks work regardless of whether the path uses the
+        // platform separator or the alternate one (Roslyn may hand us forward-slash paths on Windows).
+        var p = filePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+        if (p.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (filePath.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        var sep = Path.DirectorySeparatorChar;
+        if (p.Contains($"{sep}obj{sep}", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (filePath.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        if (p.Contains($"{sep}bin{sep}", StringComparison.OrdinalIgnoreCase))
             return false;
 
         return true;
