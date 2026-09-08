@@ -12,7 +12,7 @@ namespace ContextManager.Mcp.Tools;
 public sealed class GraphImpactAnalysisTool
 {
     private static readonly IReadOnlySet<string> BackwardEdgeTypes =
-        new HashSet<string>(StringComparer.Ordinal) { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
+        new HashSet<string>(StringComparer.Ordinal) { "CALLS", "INJECTS", "REFERENCES", "RETURNS", "INHERITS" };
 
     private readonly GraphStore _store;
 
@@ -22,7 +22,7 @@ public sealed class GraphImpactAnalysisTool
     }
 
     [McpServerTool(Name = "graph_impact_analysis"), Description(
-        "Performs an impact-specific backward traversal from a node following CALLS, INJECTS, REFERENCES, and RETURNS edges. " +
+        "Performs an impact-specific backward traversal from a node following CALLS, INJECTS, REFERENCES, RETURNS, and INHERITS edges. " +
         "Seeds the BFS with the node, its direct members (via CONTAINS), and any interfaces it implements (via IMPLEMENTS) plus their members, " +
         "so member-level dependencies aggregate to their declaring type. " +
         "Member nodes reached during traversal are rolled up to their declaring type. " +

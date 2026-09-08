@@ -24,6 +24,7 @@ public class EdgeExtractorTests
     private static readonly string TypeWithReferencesPath = FixturePath("TypeWithReferences.cs");
     private static readonly string OpenGenericImplementationPath = FixturePath("OpenGenericImplementation.cs");
     private static readonly string RecordStructPath = FixturePath("RecordStruct.cs");
+    private static readonly string GraphCorrectnessCasesPath = FixturePath("GraphCorrectnessCases.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -477,5 +478,57 @@ public class EdgeExtractorTests
             $"Expected a CONTAINS edge from the Point record struct. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
         Assert.AreEqual("Record", pointSource!.Source.Kind,
             $"record struct source node must be classified 'Record' (not 'Class'). Got Kind='{pointSource.Source.Kind}' for '{pointSource.Source.Id}'.");
+    }
+
+    [TestMethod]
+    public void Extract_ConstructedBaseAndInterface_UseOpenIdentityAndPreserveTypeArgument()
+    {
+        var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
+
+        var edges = CreateExtractor().Extract(model, root);
+
+        Assert.IsTrue(edges.Any(e => e.Type == "INHERITS" && e.Source.Id.EndsWith("Derived") &&
+            e.Target.Id.Contains("GenericBase<T>") && !e.Target.Id.Contains("Payload")));
+        Assert.IsTrue(edges.Any(e => e.Type == "IMPLEMENTS" && e.Source.Id.Contains("GenericBase<T>") &&
+            e.Target.Id.Contains("IBase<T>")));
+        Assert.IsTrue(edges.Any(e => e.Type == "REFERENCES" && e.Source.Id.EndsWith("Derived") &&
+            e.Target.Id.EndsWith("Payload")));
+    }
+
+    [TestMethod]
+    public void Extract_ConstructorAccessorArrayAndReducedExtension_AreCovered()
+    {
+        var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
+
+        var edges = CreateExtractor().Extract(model, root);
+
+        Assert.IsTrue(edges.Any(e => e.Type == "CALLS" && e.Source.Id.EndsWith("Service") &&
+            e.Target.Id.Contains("Utility.Run")), "Constructor call must originate from the containing type.");
+        Assert.IsTrue(edges.Any(e => e.Type == "CALLS" && e.Source.Id.Contains("Service.Items") &&
+            e.Target.Id.Contains("Utility.Run")), "Accessor call must originate from the property node.");
+        Assert.IsTrue(edges.Any(e => e.Type == "REFERENCES" && e.Source.Id.EndsWith("Service") &&
+            e.Target.Id.EndsWith("Payload")), "Array element type must be retained.");
+        Assert.IsTrue(edges.Any(e => e.Type == "CALLS" && e.Target.Id.Contains("Extensions.Touch<T>(T)")),
+            "Reduced extension calls must target the declaration identity.");
+    }
+
+    [TestMethod]
+    public void Extract_PartialDeclarations_DeduplicateTriplesAcrossDocumentsInStore()
+    {
+        var paths = new[] { FixturePath("PartialConsumer.Part1.cs"), FixturePath("PartialConsumer.Part2.cs") };
+        var trees = paths.Select(path => CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: path)).ToList();
+        var compilation = CSharpCompilation.Create("PartialGraphTest", trees);
+        var store = new GraphStore();
+
+        foreach (var tree in trees)
+        {
+            var root = (CompilationUnitSyntax)tree.GetRoot();
+            foreach (var edge in CreateExtractor().Extract(compilation.GetSemanticModel(tree), root))
+                store.AddEdge(edge);
+        }
+
+        var references = store.GetAggregatedNeighbors("PartialGraphFixtures.Consumer")
+            .Single(n => n.Id == "PartialGraphFixtures.Dependency" && n.Direction == "out");
+        Assert.AreEqual(1, references.EdgeKinds["REFERENCES"]);
     }
 }

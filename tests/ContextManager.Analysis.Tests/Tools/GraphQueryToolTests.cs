@@ -528,4 +528,17 @@ public class GraphQueryToolTests
         Assert.AreEqual("A", path[0]);
         Assert.AreEqual("B", path[1]);
     }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_BaseType_IncludesDerivedType()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(new GraphNode("Derived", "Class"), new GraphNode("Base", "Class"), "INHERITS"));
+        var tool = new GraphImpactAnalysisTool(store);
+
+        var json = await tool.GraphImpactAnalysisAsync("Base");
+
+        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
+        CollectionAssert.AreEqual(new[] { "Derived" }, result!.AffectedIds.ToList());
+    }
 }

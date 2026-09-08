@@ -7,6 +7,16 @@ namespace ContextManager.Analysis;
 
 public class ContextAnalyzer
 {
+    private const string ImplicitGlobalUsings = """
+        global using System;
+        global using System.Collections.Generic;
+        global using System.IO;
+        global using System.Linq;
+        global using System.Net.Http;
+        global using System.Threading;
+        global using System.Threading.Tasks;
+        """;
+
     // BCL metadata references built once per process from the runtime's trusted platform
     // assemblies. Without them the compilation resolves nothing — every predefined/BCL type
     // becomes an error symbol and pollutes the unresolved list.
@@ -43,9 +53,14 @@ public class ContextAnalyzer
             treeByPath[path] = CSharpSyntaxTree.ParseText(source, path: path, cancellationToken: ct);
         }
 
+        var implicitUsingsTree = CSharpSyntaxTree.ParseText(
+            ImplicitGlobalUsings,
+            path: "__ContextManagerImplicitGlobalUsings.g.cs",
+            cancellationToken: ct);
+
         var compilation = CSharpCompilation.Create(
             assemblyName: "ContextAnalysis",
-            syntaxTrees: treeByPath.Values,
+            syntaxTrees: treeByPath.Values.Append(implicitUsingsTree),
             references: BclReferences.Value);
 
         var files = new List<ContextFileAnalysis>(filePaths.Count);

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using QuikGraph;
-using QuikGraph.Algorithms;
 
 namespace ContextManager.Analysis.Graph;
 
@@ -12,8 +11,11 @@ public class GraphStore
     // concurrent readers never enumerate a structure being mutated.
     private sealed class State
     {
-        public readonly BidirectionalGraph<GraphNode, GraphEdge> Graph = new(allowParallelEdges: false);
+        public readonly BidirectionalGraph<GraphNode, GraphEdge> Graph = new(allowParallelEdges: true);
         public readonly Dictionary<string, GraphNode> NodeById = new(StringComparer.Ordinal);
+        public readonly HashSet<(string Source, string Target, string Type)> EdgeKeys = [];
+        public readonly Dictionary<string, GraphNode> OwnerByMemberId = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, List<GraphNode>> MembersByOwnerId = new(StringComparer.Ordinal);
     }
 
     // Volatile: every reader captures this reference once and reads both collections from it.
@@ -27,27 +29,20 @@ public class GraphStore
 
     public int NodeCount => _state.Graph.VertexCount;
     public int EdgeCount => _state.Graph.EdgeCount;
+    internal int RebuildNodeCount => (_staging ?? throw new InvalidOperationException("No rebuild is active.")).Graph.VertexCount;
+    internal int RebuildEdgeCount => (_staging ?? throw new InvalidOperationException("No rebuild is active.")).Graph.EdgeCount;
 
     public void AddNode(GraphNode node)
     {
         // Route to staging when a rebuild is active; otherwise mutate the live _state.
         // Direct mutation of _state (no rebuild) is reserved for programmatic/test builds,
         // which are single-threaded by contract — concurrent rebuilds go through BeginRebuild.
-        var s = _staging ?? _state;
-        if (s.NodeById.ContainsKey(node.Id))
-            return;
-
-        s.Graph.AddVertex(node);
-        s.NodeById[node.Id] = node;
+        AddNode(_staging ?? _state, node);
     }
 
     public void AddEdge(GraphEdge edge)
     {
-        // Ensure both endpoints exist before adding the edge.
-        AddNode(edge.Source);
-        AddNode(edge.Target);
-
-        (_staging ?? _state).Graph.AddEdge(edge);
+        AddEdge(_staging ?? _state, edge);
     }
 
     public bool TryGetNode(string id, out GraphNode? node) => _state.NodeById.TryGetValue(id, out node);
@@ -61,6 +56,12 @@ public class GraphStore
     public void BeginRebuild()
     {
         _rebuildLock.Wait();
+        _staging = new State();
+    }
+
+    public async Task BeginRebuildAsync(CancellationToken ct = default)
+    {
+        await _rebuildLock.WaitAsync(ct);
         _staging = new State();
     }
 
@@ -112,8 +113,8 @@ public class GraphStore
 
         var graph = s.Graph;
         var scope = new List<GraphNode> { node! };
-        if (!IsMemberNode(graph, node!))
-            scope.AddRange(GetContainedMembers(graph, node!));
+        if (!IsMemberNode(s, node!))
+            scope.AddRange(GetContainedMembers(s, node!));
 
         var scopeSet = new HashSet<GraphNode>(scope);
         var entries = new List<(string Id, string Kind, string Direction, Dictionary<string, int> EdgeKinds)>();
@@ -121,7 +122,7 @@ public class GraphStore
 
         void Accumulate(GraphNode neighbor, string edgeType, string direction)
         {
-            var rolled = IsMemberNode(graph, neighbor) ? GetDeclaringType(graph, neighbor) ?? neighbor : neighbor;
+            var rolled = IsMemberNode(s, neighbor) ? GetDeclaringType(s, neighbor) ?? neighbor : neighbor;
             var key = (rolled.Id, direction);
 
             if (!indexByKey.TryGetValue(key, out var idx))
@@ -267,12 +268,12 @@ public class GraphStore
 
         // Build seed: start node + its members + implemented interfaces + their members.
         var seeds = new List<GraphNode> { startNode };
-        seeds.AddRange(GetContainedMembers(graph, startNode));
+        seeds.AddRange(GetContainedMembers(s, startNode));
 
         foreach (var iface in GetImplementedInterfaces(graph, startNode))
         {
             seeds.Add(iface);
-            seeds.AddRange(GetContainedMembers(graph, iface));
+            seeds.AddRange(GetContainedMembers(s, iface));
             bridged.Add(iface.Id);
         }
 
@@ -313,7 +314,7 @@ public class GraphStore
                 seedIds.Add(iface.Id);
                 bridged.Add(iface.Id);
 
-                foreach (var member in GetContainedMembers(graph, iface))
+                foreach (var member in GetContainedMembers(s, iface))
                 {
                     if (visited.Add(member))
                     {
@@ -335,8 +336,8 @@ public class GraphStore
 
                 queue.Enqueue(implementor);
 
-                var reportId = IsMemberNode(graph, implementor)
-                    ? GetDeclaringType(graph, implementor)?.Id ?? implementor.Id
+                var reportId = IsMemberNode(s, implementor)
+                    ? GetDeclaringType(s, implementor)?.Id ?? implementor.Id
                     : implementor.Id;
 
                 Record(reportId);
@@ -354,12 +355,13 @@ public class GraphStore
 
                 queue.Enqueue(caller);
 
-                // Roll up members to their declaring type.
-                var reportId = IsMemberNode(graph, caller)
-                    ? GetDeclaringType(graph, caller)?.Id ?? caller.Id
-                    : caller.Id;
+                var owner = IsMemberNode(s, caller) ? GetDeclaringType(s, caller) : null;
+                var reportId = owner?.Id ?? caller.Id;
 
                 Record(reportId);
+
+                if (owner is not null && visited.Add(owner))
+                    queue.Enqueue(owner);
             }
         }
 
@@ -387,10 +389,8 @@ public class GraphStore
 
     // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
     private static IEnumerable<GraphNode> GetContainedMembers(
-        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
-        graph.OutEdges(typeNode)
-              .Where(e => e.Type == "CONTAINS")
-              .Select(e => e.Target);
+        State state, GraphNode typeNode) =>
+        state.MembersByOwnerId.TryGetValue(typeNode.Id, out var members) ? members : [];
 
     // Returns all nodes connected via outbound IMPLEMENTS edges.
     private static IEnumerable<GraphNode> GetImplementedInterfaces(
@@ -408,15 +408,12 @@ public class GraphStore
 
     // A node is a member if it has at least one inbound CONTAINS edge.
     private static bool IsMemberNode(
-        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode node) =>
-        graph.InEdges(node).Any(e => e.Type == "CONTAINS");
+        State state, GraphNode node) => state.OwnerByMemberId.ContainsKey(node.Id);
 
     // Returns the declaring type of a member node via its inbound CONTAINS edge.
     private static GraphNode? GetDeclaringType(
-        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode memberNode) =>
-        graph.InEdges(memberNode)
-              .FirstOrDefault(e => e.Type == "CONTAINS")
-              ?.Source;
+        State state, GraphNode memberNode) =>
+        state.OwnerByMemberId.GetValueOrDefault(memberNode.Id);
 
     /// <summary>
     /// Given a set of interface node IDs, returns those IDs for which no inbound
@@ -461,21 +458,30 @@ public class GraphStore
         if (sourceNode.Equals(targetNode))
             return [sourceId];
 
-        // QuikGraph's Dijkstra is not internally cancellable, so we check once before invoking it.
-        // A mid-traversal cancel cannot abort the algorithm; this pre-check catches an already-
-        // cancelled client before spending the work.
-        ct.ThrowIfCancellationRequested();
+        var queue = new Queue<GraphNode>();
+        var visited = new HashSet<GraphNode> { sourceNode };
+        var previous = new Dictionary<GraphNode, GraphNode>();
+        queue.Enqueue(sourceNode);
 
-        var tryGetPaths = s.Graph.ShortestPathsDijkstra(_ => 1.0, sourceNode);
+        while (queue.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = queue.Dequeue();
 
-        if (!tryGetPaths(targetNode, out var edges))
-            return [];
+            foreach (var edge in s.Graph.OutEdges(current))
+            {
+                if (!visited.Add(edge.Target))
+                    continue;
 
-        var path = new List<string> { sourceId };
-        foreach (var edge in edges)
-            path.Add(edge.Target.Id);
+                previous[edge.Target] = current;
+                if (edge.Target.Equals(targetNode))
+                    return BuildPath(sourceNode, targetNode, previous);
 
-        return path;
+                queue.Enqueue(edge.Target);
+            }
+        }
+
+        return [];
     }
 
     /// <summary>
@@ -484,7 +490,16 @@ public class GraphStore
     /// </summary>
     public string Serialize()
     {
-        var s = _state;
+        return Serialize(_state);
+    }
+
+    internal string SerializeRebuild()
+    {
+        return Serialize(_staging ?? throw new InvalidOperationException("No rebuild is active."));
+    }
+
+    private static string Serialize(State s)
+    {
         var payload = new GraphPayload(
             Nodes: s.Graph.Vertices.Select(n => new NodeDto(n.Id, n.Kind)).ToList(),
             Edges: s.Graph.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList());
@@ -506,9 +521,7 @@ public class GraphStore
 
         foreach (var n in payload.Nodes)
         {
-            var node = new GraphNode(n.Id, n.Kind);
-            newState.Graph.AddVertex(node);
-            newState.NodeById[n.Id] = node;
+            AddNode(newState, new GraphNode(n.Id, n.Kind));
         }
 
         foreach (var e in payload.Edges)
@@ -516,7 +529,7 @@ public class GraphStore
             if (newState.NodeById.TryGetValue(e.Source, out var src) &&
                 newState.NodeById.TryGetValue(e.Target, out var tgt))
             {
-                newState.Graph.AddEdge(new GraphEdge(src, tgt, e.Type));
+                AddEdge(newState, new GraphEdge(src, tgt, e.Type));
             }
         }
 
@@ -527,6 +540,56 @@ public class GraphStore
     {
         _staging = null;
         _state = new State();
+    }
+
+    private static void AddNode(State state, GraphNode node)
+    {
+        if (!state.NodeById.TryAdd(node.Id, node))
+            return;
+
+        state.Graph.AddVertex(node);
+    }
+
+    private static void AddEdge(State state, GraphEdge edge)
+    {
+        AddNode(state, edge.Source);
+        AddNode(state, edge.Target);
+
+        var source = state.NodeById[edge.Source.Id];
+        var target = state.NodeById[edge.Target.Id];
+        if (!state.EdgeKeys.Add((source.Id, target.Id, edge.Type)))
+            return;
+
+        state.Graph.AddEdge(new GraphEdge(source, target, edge.Type));
+
+        if (edge.Type != "CONTAINS" || state.OwnerByMemberId.ContainsKey(target.Id))
+            return;
+
+        state.OwnerByMemberId[target.Id] = source;
+        if (!state.MembersByOwnerId.TryGetValue(source.Id, out var members))
+        {
+            members = [];
+            state.MembersByOwnerId[source.Id] = members;
+        }
+
+        members.Add(target);
+    }
+
+    private static IReadOnlyList<string> BuildPath(
+        GraphNode source,
+        GraphNode target,
+        IReadOnlyDictionary<GraphNode, GraphNode> previous)
+    {
+        var path = new List<string> { target.Id };
+        var current = target;
+        while (!current.Equals(source))
+        {
+            current = previous[current];
+            path.Add(current.Id);
+        }
+
+        path.Reverse();
+        return path;
     }
 
     // Private DTOs used only for serialization — never exposed outside this class.
