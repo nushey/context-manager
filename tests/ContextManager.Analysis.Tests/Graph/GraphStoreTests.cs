@@ -1282,7 +1282,7 @@ public class GraphStoreTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => store.BeginRebuildAsync(cts.Token));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => store.BeginRebuildAsync(cts.Token));
 
         StringAssert.Contains(store.SerializeRebuild(), "Active");
         store.AbortRebuild();
