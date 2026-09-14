@@ -20,6 +20,7 @@ internal static class NodeClassifier
 
     public static GraphNode? NodeFor(ISymbol symbol)
     {
+        symbol = Canonicalize(symbol);
         var kind = symbol switch
         {
             INamedTypeSymbol named => ClassifyTypeKind(named),
@@ -30,4 +31,13 @@ internal static class NodeClassifier
 
         return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
     }
+
+    public static ISymbol Canonicalize(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol { ReducedFrom: not null } method => method.ReducedFrom.OriginalDefinition,
+        IMethodSymbol method => method.OriginalDefinition,
+        IPropertySymbol property => property.OriginalDefinition,
+        INamedTypeSymbol named => named.OriginalDefinition,
+        _ => symbol
+    };
 }

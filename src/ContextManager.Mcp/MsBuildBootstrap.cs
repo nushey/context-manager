@@ -6,12 +6,16 @@ namespace ContextManager.Mcp;
 internal static class MsBuildBootstrap
 {
     public const string MsBuildPathVariable = "CONTEXT_MANAGER_MSBUILD_PATH";
+    private static string? _selectedIdentity;
 
     // Idempotent: safe to call multiple times. Throws if no MSBuild instance is available.
     public static void EnsureRegistered()
     {
         if (MSBuildLocator.IsRegistered)
+        {
+            _selectedIdentity ??= "pre-registered by the current process";
             return;
+        }
 
         Register();
     }
@@ -29,12 +33,10 @@ internal static class MsBuildBootstrap
                     $"{MsBuildPathVariable} points to a directory that does not exist: {pinnedPath}");
 
             MSBuildLocator.RegisterMSBuildPath(pinnedPath);
+            _selectedIdentity = $"pinned path '{Path.GetFullPath(pinnedPath)}'";
             return;
         }
 
-        // With multiple installs (e.g. VS 2022 Build Tools 17.x + VS 18.x),
-        // RegisterDefaults() picks nondeterministically and can mix assemblies
-        // across major versions. Always pick the highest version explicitly.
         var instance = MSBuildLocator.QueryVisualStudioInstances()
             .OrderByDescending(i => i.Version)
             .FirstOrDefault();
@@ -45,5 +47,16 @@ internal static class MsBuildBootstrap
                 $"or set {MsBuildPathVariable} to an MSBuild bin directory.");
 
         MSBuildLocator.RegisterInstance(instance);
+        _selectedIdentity = $"{instance.Name} {instance.Version} at '{instance.MSBuildPath}'";
+    }
+
+    public static string DescribeRegistration()
+    {
+        var loaded = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => a.GetName().Name is { } name && name.StartsWith("Microsoft.Build", StringComparison.Ordinal))
+            .Select(a => $"{a.GetName().FullName} from '{a.Location}'")
+            .ToList();
+
+        return $"selected={_selectedIdentity ?? "unknown"}; loaded=[{string.Join("; ", loaded)}]";
     }
 }

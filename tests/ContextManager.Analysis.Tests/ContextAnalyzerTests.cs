@@ -235,4 +235,28 @@ public class ContextAnalyzerTests
             result.Unresolved.Contains("UnknownPolicy", StringComparer.Ordinal),
             $"Genuinely unknown user type must stay in Unresolved. Got: [{string.Join(", ", result.Unresolved)}]");
     }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_ImplicitSdkUsingsResolveBclButPreserveMissingUserType()
+    {
+        var path = FixturePath("ImplicitBclService.cs");
+
+        var result = await CreateAnalyzer().AnalyzeAsync([path]);
+
+        foreach (var bcl in new[] { "CancellationToken", "List<string>", "Task<string>" })
+            Assert.IsFalse(result.Unresolved.Contains(bcl, StringComparer.Ordinal), bcl);
+        CollectionAssert.Contains(result.Unresolved.ToList(), "MissingPolicy");
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_CurrentNamespaceTypeWinsOverImplicitGlobalUsing()
+    {
+        var path = FixturePath("CompetingCancellationToken.cs");
+
+        var result = await CreateAnalyzer().AnalyzeAsync([path]);
+
+        var reference = result.References.Single(r => r.From == "CompetingConsumer" && r.To == "CancellationToken");
+        Assert.AreEqual(path, reference.ResolvedFile);
+        CollectionAssert.DoesNotContain(result.Unresolved.ToList(), "CancellationToken");
+    }
 }

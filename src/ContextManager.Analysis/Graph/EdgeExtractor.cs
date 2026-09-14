@@ -36,12 +36,8 @@ public class EdgeExtractor
                     if (baseSymbol is null || !IsSourceSymbol(baseSymbol))
                         continue;
 
-                    var targetNode = NodeClassifier.NodeFor(baseSymbol);
-                    if (targetNode is null)
-                        continue;
-
                     var edgeType = baseSymbol.TypeKind == TypeKind.Interface ? "IMPLEMENTS" : "INHERITS";
-                    AddEdge(sourceNode, targetNode, edgeType, seen, edges);
+                    EmitGenericAwareEdge(baseSymbol, sourceNode, edgeType, seen, edges);
                 }
             }
 
@@ -68,7 +64,8 @@ public class EdgeExtractor
                     {
                         var memberSymbol = model.GetDeclaredSymbol(methodDecl, ct) as IMethodSymbol;
                         if (memberSymbol is null) continue;
-                        var memberNode = new GraphNode(memberSymbol.ToDisplayString(), "Method");
+                        var memberNode = NodeClassifier.NodeFor(memberSymbol);
+                        if (memberNode is null) continue;
                         AddEdge(sourceNode, memberNode, "CONTAINS", seen, edges);
                         break;
                     }
@@ -76,7 +73,8 @@ public class EdgeExtractor
                     {
                         var memberSymbol = model.GetDeclaredSymbol(propertyDecl, ct) as IPropertySymbol;
                         if (memberSymbol is null) continue;
-                        var memberNode = new GraphNode(memberSymbol.ToDisplayString(), "Property");
+                        var memberNode = NodeClassifier.NodeFor(memberSymbol);
+                        if (memberNode is null) continue;
                         AddEdge(sourceNode, memberNode, "CONTAINS", seen, edges);
                         break;
                     }
@@ -129,7 +127,9 @@ public class EdgeExtractor
                 if (methodSymbol is null)
                     continue;
 
-                var methodNode = new GraphNode(methodSymbol.ToDisplayString(), "Method");
+                var methodNode = NodeClassifier.NodeFor(methodSymbol);
+                if (methodNode is null)
+                    continue;
 
                 // RETURNS edges: method return type → if source type (open generic for constructed)
                 EmitGenericAwareEdge(
@@ -148,11 +148,30 @@ public class EdgeExtractor
                             if (invokedSymbol is null || !IsSourceSymbol(invokedSymbol))
                                 continue;
 
-                            var invokedNode = new GraphNode(invokedSymbol.ToDisplayString(), "Method");
-                            AddEdge(methodNode, invokedNode, "CALLS", seen, edges);
+                            EmitCall(invokedSymbol, methodNode, seen, edges);
                         }
                     }
                 }
+            }
+
+            foreach (var constructor in typeDecl.Members.OfType<ConstructorDeclarationSyntax>())
+                EmitCallsFromBody(model, constructor.Body ?? (SyntaxNode?)constructor.ExpressionBody,
+                    sourceNode, seen, edges, ct);
+
+            foreach (var property in typeDecl.Members.OfType<PropertyDeclarationSyntax>())
+            {
+                var propertySymbol = model.GetDeclaredSymbol(property, ct) as IPropertySymbol;
+                var propertyNode = propertySymbol is null ? null : NodeClassifier.NodeFor(propertySymbol);
+                if (propertyNode is null)
+                    continue;
+
+                EmitCallsFromBody(model, property.ExpressionBody, propertyNode, seen, edges, ct);
+                if (property.AccessorList is null)
+                    continue;
+
+                foreach (var accessor in property.AccessorList.Accessors)
+                    EmitCallsFromBody(model, accessor.Body ?? (SyntaxNode?)accessor.ExpressionBody,
+                        propertyNode, seen, edges, ct);
             }
         }
 
@@ -165,6 +184,10 @@ public class EdgeExtractor
         // Generated file filtering (obj/, bin/, .g.cs) is the caller's responsibility
         // (GraphBuilder filters documents before invoking EdgeExtractor).
         if (!symbol.DeclaringSyntaxReferences.IsEmpty)
+            return true;
+
+        var canonical = NodeClassifier.Canonicalize(symbol);
+        if (!canonical.DeclaringSyntaxReferences.IsEmpty)
             return true;
 
         // Constructed generics (e.g. IRepository<Attraction>) have empty DeclaringSyntaxReferences —
@@ -204,6 +227,12 @@ public class EdgeExtractor
         if (typeSymbol is null)
             return;
 
+        if (typeSymbol is IArrayTypeSymbol array)
+        {
+            EmitGenericAwareEdge(array.ElementType, sourceNode, edgeType, seen, edges);
+            return;
+        }
+
         if (typeSymbol is INamedTypeSymbol { IsGenericType: true } named
             && !named.OriginalDefinition.Equals(named, SymbolEqualityComparer.Default))
         {
@@ -241,6 +270,12 @@ public class EdgeExtractor
         if (typeSymbol is null)
             return;
 
+        if (typeSymbol is IArrayTypeSymbol array)
+        {
+            EmitReferencesForType(array.ElementType, sourceNode, seen, edges);
+            return;
+        }
+
         if (typeSymbol is INamedTypeSymbol { IsGenericType: true } named
             && !named.OriginalDefinition.Equals(named, SymbolEqualityComparer.Default))
         {
@@ -261,6 +296,45 @@ public class EdgeExtractor
             var targetNode = NodeClassifier.NodeFor(typeSymbol);
             if (targetNode is not null)
                 AddEdge(sourceNode, targetNode, "REFERENCES", seen, edges);
+        }
+    }
+
+    private static void EmitCallsFromBody(
+        SemanticModel model,
+        SyntaxNode? body,
+        GraphNode sourceNode,
+        HashSet<(string, string, string)> seen,
+        List<GraphEdge> edges,
+        CancellationToken ct)
+    {
+        if (body is null)
+            return;
+
+        foreach (var invocation in body.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            var invokedSymbol = model.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+            if (invokedSymbol is not null && IsSourceSymbol(invokedSymbol))
+                EmitCall(invokedSymbol, sourceNode, seen, edges);
+        }
+    }
+
+    private static void EmitCall(
+        IMethodSymbol invokedSymbol,
+        GraphNode sourceNode,
+        HashSet<(string, string, string)> seen,
+        List<GraphEdge> edges)
+    {
+        var invokedNode = NodeClassifier.NodeFor(invokedSymbol);
+        if (invokedNode is not null)
+            AddEdge(sourceNode, invokedNode, "CALLS", seen, edges);
+
+        foreach (var typeArgument in invokedSymbol.TypeArguments)
+            EmitReferencesForType(typeArgument, sourceNode, seen, edges);
+
+        if (invokedSymbol.ContainingType is { IsGenericType: true } containingType)
+        {
+            foreach (var typeArgument in containingType.TypeArguments)
+                EmitReferencesForType(typeArgument, sourceNode, seen, edges);
         }
     }
 }

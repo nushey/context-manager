@@ -1177,4 +1177,135 @@ public class GraphStoreTests
             Enumerable.Range(1, 11).Select(i => $"T{i}").ToList(),
             full.ToList());
     }
+
+    [TestMethod]
+    public void AddEdge_PreservesDifferentKindsAndDeduplicatesTriplesAcrossRoundTrip()
+    {
+        var store = new GraphStore();
+        var source = new GraphNode("Source", "Class");
+        var target = new GraphNode("Target", "Class");
+
+        store.AddEdge(new GraphEdge(source, target, "INJECTS"));
+        store.AddEdge(new GraphEdge(source, target, "REFERENCES"));
+        store.AddEdge(new GraphEdge(source, target, "INJECTS"));
+
+        Assert.AreEqual(2, store.EdgeCount);
+        var restored = new GraphStore();
+        restored.Deserialize(store.Serialize());
+        Assert.AreEqual(2, restored.EdgeCount);
+        var neighbor = restored.GetAggregatedNeighbors("Source").Single();
+        Assert.AreEqual(1, neighbor.EdgeKinds["INJECTS"]);
+        Assert.AreEqual(1, neighbor.EdgeKinds["REFERENCES"]);
+    }
+
+    [TestMethod]
+    public void Deserialize_DeduplicatesRepeatedTriples()
+    {
+        const string json = """
+            {"nodes":[{"id":"A","kind":"Class"},{"id":"B","kind":"Class"}],
+             "edges":[{"source":"A","target":"B","type":"CALLS"},{"source":"A","target":"B","type":"CALLS"}]}
+            """;
+        var store = new GraphStore();
+
+        store.Deserialize(json);
+
+        Assert.AreEqual(1, store.EdgeCount);
+    }
+
+    [TestMethod]
+    public void ImpactBackward_MemberConsumerContinuesThroughDeclaringTypeAndInheritance()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(new GraphNode("Utility", "Class"), new GraphNode("Utility.Run", "Method"), "CONTAINS"));
+        store.AddEdge(new GraphEdge(new GraphNode("Service", "Class"), new GraphNode("Service.Run", "Method"), "CONTAINS"));
+        store.AddEdge(new GraphEdge(new GraphNode("Service.Run", "Method"), new GraphNode("Utility.Run", "Method"), "CALLS"));
+        store.AddEdge(new GraphEdge(new GraphNode("Controller", "Class"), new GraphNode("Service", "Class"), "INJECTS"));
+        store.AddEdge(new GraphEdge(new GraphNode("Derived", "Class"), new GraphNode("Utility", "Class"), "INHERITS"));
+
+        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS", "INHERITS" };
+        var result = store.ImpactBackward("Utility", edgeTypes);
+
+        CollectionAssert.Contains(result.ToList(), "Service");
+        CollectionAssert.Contains(result.ToList(), "Controller");
+        CollectionAssert.Contains(result.ToList(), "Derived");
+    }
+
+    [TestMethod]
+    public void ShortestPath_PreCancelledToken_ThrowsOperationCanceledException()
+    {
+        var store = BuildSampleGraph();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        Assert.ThrowsExactly<OperationCanceledException>(() => store.ShortestPath("A", "C", cts.Token));
+    }
+
+    [TestMethod]
+    public async Task Rebuilds_AreSerializedAndEachSerializesItsOwnSnapshot()
+    {
+        var store = new GraphStore();
+        await store.BeginRebuildAsync();
+        store.AddNode(new GraphNode("First", "Class"));
+
+        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = Task.Run(async () =>
+        {
+            secondStarted.SetResult(true);
+            await store.BeginRebuildAsync();
+            secondEntered.SetResult(true);
+            store.AddNode(new GraphNode("Second", "Class"));
+            var json = store.SerializeRebuild();
+            store.CommitRebuild();
+            return json;
+        });
+
+        await secondStarted.Task;
+        await Task.Delay(25);
+        Assert.IsFalse(secondEntered.Task.IsCompleted);
+        var firstJson = store.SerializeRebuild();
+        store.CommitRebuild();
+        var secondJson = await second;
+
+        StringAssert.Contains(firstJson, "First");
+        Assert.IsFalse(firstJson.Contains("Second", StringComparison.Ordinal));
+        StringAssert.Contains(secondJson, "Second");
+        Assert.IsFalse(secondJson.Contains("First", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task BeginRebuildAsync_CancelledWriterWait_PreservesActiveRebuild()
+    {
+        var store = new GraphStore();
+        await store.BeginRebuildAsync();
+        store.AddNode(new GraphNode("Active", "Class"));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => store.BeginRebuildAsync(cts.Token));
+
+        StringAssert.Contains(store.SerializeRebuild(), "Active");
+        store.AbortRebuild();
+    }
+
+    [TestMethod]
+    public void GetAggregatedNeighbors_HighFanIn_UsesOwnerIndexAndPreservesEncounterOrder()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(new GraphNode("Target", "Class"), new GraphNode("Target.Run", "Method"), "CONTAINS"));
+
+        for (var i = 0; i < 1_000; i++)
+        {
+            var owner = new GraphNode($"Consumer{i}", "Class");
+            var member = new GraphNode($"Consumer{i}.Run", "Method");
+            store.AddEdge(new GraphEdge(owner, member, "CONTAINS"));
+            store.AddEdge(new GraphEdge(member, new GraphNode("Target.Run", "Method"), "CALLS"));
+        }
+
+        var neighbors = store.GetAggregatedNeighbors("Target");
+
+        Assert.AreEqual(1_000, neighbors.Count);
+        Assert.AreEqual("Consumer0", neighbors[0].Id);
+        Assert.AreEqual("Consumer999", neighbors[^1].Id);
+    }
 }
