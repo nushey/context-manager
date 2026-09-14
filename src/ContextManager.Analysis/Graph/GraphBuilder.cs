@@ -200,18 +200,18 @@ public class GraphBuilder
         if (string.IsNullOrEmpty(filePath))
             return false;
 
-        // Normalize once so the obj/bin checks work regardless of whether the path uses the
-        // platform separator or the alternate one (Roslyn may hand us forward-slash paths on Windows).
-        var p = filePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        // Normalize to '/' so the obj/bin checks hold for both separators on every platform.
+        // Path.DirectorySeparatorChar is unusable here: on Unix it equals the alt separator,
+        // so a backslash path would slip through unnormalized.
+        var p = filePath.Replace('\\', '/');
 
         if (p.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var sep = Path.DirectorySeparatorChar;
-        if (p.Contains($"{sep}obj{sep}", StringComparison.OrdinalIgnoreCase))
+        if (p.Contains("/obj/", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (p.Contains($"{sep}bin{sep}", StringComparison.OrdinalIgnoreCase))
+        if (p.Contains("/bin/", StringComparison.OrdinalIgnoreCase))
             return false;
 
         return true;
