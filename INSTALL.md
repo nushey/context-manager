@@ -16,8 +16,10 @@ supported client. ContextManager ships as a **.NET global tool** that speaks MCP
 - That is the only requirement for `inspect_file` and `inspect_context`. No Python, Node, or Docker.
 - **`project_scan` on `.NET Framework 4.8` solutions (Windows only)** additionally needs the
   MSBuild toolchain + Framework 4.8 targeting pack — install
-  [Visual Studio Build Tools 2022/2025](https://visualstudio.microsoft.com/downloads/) with the
-  **.NET desktop build tools** workload. MSBuild 17.x and 18.x are both supported.
+  [Visual Studio Build Tools 2022/2026](https://visualstudio.microsoft.com/downloads/) with the
+  **.NET desktop build tools** workload. These projects are evaluated with the MSBuild of the
+  newest installed Visual Studio / Build Tools (17.x or 18.x), so a Visual Studio update can
+  require a newer ContextManager release.
   `inspect_file` / `inspect_context` work on any platform regardless of target framework.
 
 ---
@@ -464,5 +466,6 @@ inspection and graph tools so the agent navigates before it reads.
 | `command not found` / server won't start | `~/.dotnet/tools` not on `PATH`. Add it, or use the absolute path to the executable (see the [PATH note](#️-windows--path-note-read-before-configuring-any-client)). |
 | Tools don't appear after editing config | Client wasn't fully restarted. Quit completely and reopen. |
 | `project_scan` throws on a `net48` solution | Missing MSBuild / Framework 4.8 targeting pack. Install VS Build Tools with **.NET desktop build tools** (Windows only). |
+| `project_scan` on a `net48` solution fails with `TypeInitializationException` in `Microsoft.Build.Shared.XMakeElements` | The newest installed Visual Studio ships an MSBuild that the installed ContextManager's Roslyn build host does not support. Run `dotnet tool update -g ContextManager`. |
 | Wrong config wins (Cursor/Kilo/Codex) | Project-scoped config overrides global. Check for a local `.cursor/mcp.json`, `kilo.jsonc`, or `.codex/config.toml`. |
 | JSON parse error | Trailing comma or comment in a strict-JSON file. Only `kilo.jsonc` / `opencode.jsonc` allow comments. |

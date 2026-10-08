@@ -63,8 +63,9 @@ That's it for `inspect_file` and `inspect_context`. No Python, no Node, no Docke
 
 > **`project_scan` on `.NET Framework 4.8` solutions (Windows only):** it uses `MSBuildWorkspace`,
 > which needs the MSBuild toolchain + Framework 4.8 targeting pack. Install
-> [Visual Studio Build Tools 2022/2025](https://visualstudio.microsoft.com/downloads/) with the
-> **.NET desktop build tools** workload (MSBuild 17.x and 18.x both supported). Not supported on
+> [Visual Studio Build Tools 2022/2026](https://visualstudio.microsoft.com/downloads/) with the
+> **.NET desktop build tools** workload. These projects are evaluated with the MSBuild of the newest
+> installed Visual Studio / Build Tools (17.x or 18.x). Not supported on
 > Linux for `net48`. `inspect_file` / `inspect_context` work on any platform regardless of target framework.
 
 ### 1. Install the tool

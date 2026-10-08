@@ -65,7 +65,7 @@ Ordered by risk. Each item states what to check, why, and how to verify.
    - Verify: check whether Roslyn 5.9.0 exposes the BuildHost's chosen MSBuild path or remote stack (e.g. via the `msbuildLogger` parameter of `OpenSolutionAsync` or a binlog). If so, include it in the `scan_failed` diagnostics.
 
 3. **Documentation overstates compatibility.**
-   - Why: `INSTALL.md` / `README.md` state "MSBuild 17.x and 18.x are both supported". Compatibility depends on the Roslyn BuildHost version matching the newest installed VS minor; 18.10 broke with Roslyn 5.3.0. `CONTEXT_MANAGER_MSBUILD_PATH` and `MSBUILD_EXE_PATH` do not steer the BuildHost, so users have no documented override.
+   - Why: `INSTALL.md` / `README.md` state "MSBuild 17.x and 18.x are both supported". Compatibility depends on the Roslyn BuildHost version matching the newest installed VS minor; 18.10 broke with Roslyn 5.3.0. `MSBUILD_EXE_PATH` does not steer the BuildHost. (`CONTEXT_MANAGER_MSBUILD_PATH` support was removed; MSBuild paths must not be set in the MCP client config.)
    - Verify: confirm whether any env var or `MSBuildWorkspace` property steers the BuildHost MSBuild selection; document the real behavior and the minimum Roslyn version per VS version.
 
 4. **Silent breakage after VS updates.**
@@ -75,3 +75,11 @@ Ordered by risk. Each item states what to check, why, and how to verify.
 5. **Package alignment after the bump.**
    - Why: `Microsoft.Build.Framework` / `Microsoft.NET.StringTools` stay at 18.6.3 (compile-time only, `ExcludeAssets="runtime"`) while Roslyn moved to 5.9.0. Restore produced no NU1608/NU1605 warnings here, but it was not checked explicitly.
    - Verify: `dotnet restore` + `dotnet list package --include-transitive` and look for version conflicts or downgrade warnings.
+
+## Review results (2026-10-08)
+
+- **1. Statically resolved.** `Microsoft.CodeAnalysis.Workspaces.MSBuild.BuildHost.exe` 5.9.0 (net472) has no reference to `System.Collections.Immutable`. Its references are `System.Memory 4.0.5.0` (bundled, redirect `0.0.0.0-4.0.5.0`), `Microsoft.Build`/`Microsoft.Build.Framework 15.1.0.0` (redirected to whatever MSBuild is loaded), `Microsoft.Build.Locator`, `System.Text.Json 10.0.0.1` (bundled), and `Contracts`. MSBuild 17.14 references `System.Memory 4.0.2.0`, which the redirect moves up to the bundled 4.0.5.0. Running the test on a VS 2022-only machine is still worth doing, but this mismatch class is ruled out.
+- **5. Resolved.** `dotnet restore` reports no warnings. `Microsoft.Build.Framework` resolves to 18.6.3 (compile-only, `ExcludeAssets="runtime"`) in `ContextManager.Mcp` and the tests. In `ContextManager.Analysis` it resolves to 17.11.48 through Roslyn's `net10.0` dependency group. No `Microsoft.Build*.dll` other than `Microsoft.Build.Locator.dll` ends up in the MCP output, as MSBL001 requires.
+- **3. Docs corrected.** `README.md` / `INSTALL.md` no longer claim blanket "17.x and 18.x supported". They now explain that legacy projects use the newest installed VS MSBuild, rename Build Tools "2025" to "2026", and add a troubleshooting row for the `XMakeElements` `TypeInitializationException`.
+- **`MSBUILD_EXE_PATH` is not needed in the MCP client config (confirmed).** Do not restore it in `~/.claude.json` after the release; the README/INSTALL client examples never set it.
+- **2 and 4 remain open.** They are a diagnostics feature and a CI decision, not version-alignment fixes.
