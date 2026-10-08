@@ -3,6 +3,7 @@ using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
+using Microsoft.CodeAnalysis;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -90,7 +91,7 @@ public sealed class ProjectScanTool
                     string.Join(Environment.NewLine, result.Diagnostics.Select(d => $"{d.Kind}: {d.Message}")),
                     ct);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            catch (Exception ex)
             {
                 Console.Error.WriteLine($"project_scan phase=diagnostics_log failed: {ex}");
                 logFailureText = $" Diagnostics log not written: {ex.Message}";
@@ -160,7 +161,7 @@ public sealed class ProjectScanTool
 
         var groups = diagnostics
             .GroupBy(d => (d.Kind, d.Message))
-            .OrderByDescending(g => g.Key.Kind == "Failure")
+            .OrderByDescending(g => g.Key.Kind == WorkspaceDiagnosticKind.Failure.ToString())
             .ThenByDescending(g => g.Count())
             .ToList();
 

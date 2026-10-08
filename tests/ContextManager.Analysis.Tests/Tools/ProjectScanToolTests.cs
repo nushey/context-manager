@@ -187,7 +187,15 @@ public class ProjectScanToolTests
     {
         var store = new GraphStore();
         store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = new ProjectScanTool(new GraphBuilder(store, new EdgeExtractor()), store, (_, _, _) => Task.CompletedTask);
+        var writes = new Dictionary<string, string>();
+        var tool = new ProjectScanTool(
+            new GraphBuilder(store, new EdgeExtractor()),
+            store,
+            (path, content, _) =>
+            {
+                writes[path] = content;
+                return Task.CompletedTask;
+            });
         var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Empty.sln");
 
         var json = await tool.ProjectScanAsync(solutionPath);
@@ -195,6 +203,35 @@ public class ProjectScanToolTests
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_empty", error?.Code);
         Assert.IsTrue(store.TryGetNode("Previous", out _));
+        var log = writes.Single(w => w.Key.EndsWith("scan-diagnostics.log"));
+        Assert.AreEqual(string.Empty, log.Value, error?.Message);
+    }
+
+    [TestMethod]
+    [Timeout(120_000)]
+    public async Task ProjectScanAsync_CancelledDuringDiagnosticsLogWrite_KeepsNewGraphAndReportsLogFailure()
+    {
+        var store = new GraphStore();
+        store.AddNode(new GraphNode("Previous", "Class"));
+        using var cts = new CancellationTokenSource();
+        var tool = new ProjectScanTool(
+            new GraphBuilder(store, new EdgeExtractor()),
+            store,
+            (path, _, token) =>
+            {
+                if (!path.EndsWith("scan-diagnostics.log"))
+                    return Task.CompletedTask;
+                cts.Cancel();
+                throw new OperationCanceledException(token);
+            });
+        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+
+        var result = await tool.ProjectScanAsync(solutionPath, cts.Token);
+
+        StringAssert.StartsWith(result, "Scan partial.");
+        StringAssert.Contains(result, "Diagnostics log not written:");
+        Assert.IsFalse(store.TryGetNode("Previous", out _));
+        Assert.IsTrue(store.TryGetNode("ScanFixtures.SdkType", out _));
     }
 
     private static string FindRepoRoot()
