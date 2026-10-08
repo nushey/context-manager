@@ -14,11 +14,11 @@ public sealed class GraphImpactAnalysisTool
     private static readonly IReadOnlySet<string> BackwardEdgeTypes =
         new HashSet<string>(StringComparer.Ordinal) { "CALLS", "INJECTS", "REFERENCES", "RETURNS", "INHERITS" };
 
-    private readonly GraphStore _store;
+    private readonly GraphRegistry _registry;
 
-    public GraphImpactAnalysisTool(GraphStore store)
+    public GraphImpactAnalysisTool(GraphRegistry registry)
     {
-        _store = store;
+        _registry = registry;
     }
 
     [McpServerTool(Name = "graph_impact_analysis"), Description(
@@ -32,11 +32,18 @@ public sealed class GraphImpactAnalysisTool
         "When 'maxResults' is set, 'affectedIds' is capped to that many BFS-ordered entries and a boolean " +
         "'truncated' flag indicates whether additional reachable types were omitted.")]
     public Task<string> GraphImpactAnalysisAsync(
+        [Description("Absolute path to the .sln whose graph to query, the same path passed to project_scan. The graph is read from .context-manager/graph.json next to it and reloaded whenever that file changes.")] string solutionPath,
         [Description("The ISymbol.ToDisplayString() ID of the node to analyze for impact.")] string nodeId,
         [Description("Optional cap on the number of affectedIds returned. The full BFS still runs to keep the result deterministic; when the cap is hit, the returned ids are the BFS-ordered prefix and 'truncated' is set to true. Omit for the complete impact set.")] int? maxResults = null,
         CancellationToken ct = default)
     {
-        if (!_store.TryGetNode(nodeId, out var startNode))
+        var store = _registry.TryLoad(solutionPath);
+        if (store is null)
+            return Task.FromResult(JsonSerializer.Serialize(
+                new AnalysisError("graph_not_found", $"No graph for {solutionPath}. Run project_scan first.", solutionPath),
+                AnalysisJson.Options));
+
+        if (!store.TryGetNode(nodeId, out var startNode))
             return Task.FromResult(JsonSerializer.Serialize(
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options));
@@ -46,14 +53,14 @@ public sealed class GraphImpactAnalysisTool
         IReadOnlyList<string> bridgedInterfaceIds;
 
         if (maxResults.HasValue)
-            affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, maxResults.Value, out truncated, out bridgedInterfaceIds, ct);
+            affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, maxResults.Value, out truncated, out bridgedInterfaceIds, ct);
         else
         {
-            affectedIds = _store.ImpactBackward(nodeId, BackwardEdgeTypes, out bridgedInterfaceIds, ct);
+            affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, out bridgedInterfaceIds, ct);
             truncated = false;
         }
 
-        var diagnostics = BuildReflectionDiagnostics(startNode!, nodeId, bridgedInterfaceIds);
+        var diagnostics = BuildReflectionDiagnostics(store, startNode!, nodeId, bridgedInterfaceIds);
         var result = new GraphImpactResult(affectedIds, diagnostics, truncated);
 
         return Task.FromResult(JsonSerializer.Serialize(result, AnalysisJson.Options));
@@ -64,7 +71,8 @@ public sealed class GraphImpactAnalysisTool
     // Using the traversal-derived set (not just start node's direct interfaces) ensures
     // transitive bridging is covered without a second graph walk.
     // Returns diagnostic entries for those with zero in-graph implementations.
-    private IReadOnlyList<GraphImpactDiagnostic> BuildReflectionDiagnostics(
+    private static IReadOnlyList<GraphImpactDiagnostic> BuildReflectionDiagnostics(
+        GraphStore store,
         GraphNode startNode,
         string nodeId,
         IReadOnlyList<string> bridgedInterfaceIds)
@@ -78,7 +86,7 @@ public sealed class GraphImpactAnalysisTool
         // This covers transitive bridging discovered mid-BFS, not just the start node's direct interfaces.
         interfacesToCheck.AddRange(bridgedInterfaceIds);
 
-        var blindSpots = _store.GetInterfacesWithNoImplementations(interfacesToCheck);
+        var blindSpots = store.GetInterfacesWithNoImplementations(interfacesToCheck);
 
         return blindSpots
             .Select(id => new GraphImpactDiagnostic(

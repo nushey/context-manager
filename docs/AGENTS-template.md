@@ -17,14 +17,14 @@
 
 ### Knowledge Graph (if `project_scan` has been run)
 
-Use graph tools to navigate before you read. The starting point is always the file the user mentions.
+Use graph tools to navigate before you read. The starting point is always the file the user mentions. Every graph tool takes `solutionPath`: the absolute path of the `.sln` passed to `project_scan`. If a graph tool returns `graph_not_found`, run `project_scan` on that solution first.
 
 | Step | Tool | Purpose |
 |------|------|---------|
 | 1 | `inspect_file(path)` | Read the type → note namespace and type name |
-| 2 | `graph_get_dependencies(namespace.TypeName)` | Discover adjacent files worth reading |
+| 2 | `graph_get_dependencies(solutionPath, namespace.TypeName)` | Discover adjacent files worth reading |
 | 3 | `inspect_file` on relevant neighbors | Read only what you actually need |
-| 4 | `graph_impact_analysis(namespace.TypeName)` | Assess blast radius before changing anything |
+| 4 | `graph_impact_analysis(solutionPath, namespace.TypeName)` | Assess blast radius before changing anything |
 
 **Reading `graph_get_dependencies` results:** entries are aggregated per neighbor type and direction. `direction: "in"` = the neighbor depends on the queried node; `direction: "out"` = the queried node depends on the neighbor. `edgeKinds` counts the edges per kind (`INJECTS`, `CALLS`, `REFERENCES`, `IMPLEMENTS`, …). The queried type's own members are never listed — use `inspect_file` for those.
 
@@ -33,4 +33,4 @@ Use graph tools to navigate before you read. The starting point is always the fi
 - Many results → this type's public contract is load-bearing. Preserve it.
 - Do NOT inspect every node in the result. Use the count and direct callers to decide how conservative to be.
 
-**`graph_path_find(sourceId, targetId)`** is available for investigation: use it when you need to understand why two nodes are connected or trace the dependency chain between two specific types.
+**`graph_path_find(solutionPath, sourceId, targetId)`** is available for investigation: use it when you need to understand why two nodes are connected or trace the dependency chain between two specific types.

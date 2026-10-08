@@ -21,7 +21,7 @@ public class GraphStore
     // Volatile: every reader captures this reference once and reads both collections from it.
     private volatile State _state = new();
 
-    // Staging target for an in-progress rebuild. Volatile because GraphBuilder.BuildAsync is async
+    // Staging target for an in-progress rebuild. Volatile because GraphBuilder.BuildWithReportAsync is async
     // and may resume on a different thread pool thread after an await — the writer must observe the
     // staging reference set by BeginRebuild. Only the writer (holding _rebuildLock) mutates it.
     private volatile State? _staging;
@@ -83,7 +83,7 @@ public class GraphStore
 
     /// <summary>
     /// Discards the staging graph without publishing and releases the writer lock. Use when a
-    /// rebuild (GraphBuilder.BuildAsync) fails partway through, so the previous graph is preserved
+    /// rebuild (GraphBuilder.BuildWithReportAsync) fails partway through, so the previous graph is preserved
     /// and the lock is not leaked (which would deadlock the next scan).
     /// </summary>
     public void AbortRebuild()

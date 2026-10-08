@@ -15,19 +15,21 @@ public sealed class ProjectScanTool
     private const int MaxInlineDiagnosticLength = 300;
 
     private readonly GraphBuilder _builder;
+    private readonly GraphRegistry _registry;
     private readonly Func<string, string, CancellationToken, Task> _writeFile;
 
-    public ProjectScanTool(GraphBuilder builder, GraphStore store)
-        : this(builder, store, WriteAtomicallyAsync)
+    public ProjectScanTool(GraphBuilder builder, GraphRegistry registry)
+        : this(builder, registry, WriteAtomicallyAsync)
     {
     }
 
     public ProjectScanTool(
         GraphBuilder builder,
-        GraphStore store,
+        GraphRegistry registry,
         Func<string, string, CancellationToken, Task> writeFile)
     {
         _builder = builder;
+        _registry = registry;
         _writeFile = writeFile;
     }
 
@@ -36,7 +38,8 @@ public sealed class ProjectScanTool
         "The result reports project/document coverage, unsupported languages, skipped documents, and a bounded summary of workspace diagnostics: " +
         "identical diagnostics are grouped with their counts, failures first, at most 10 groups inline with long messages truncated. " +
         "The full raw diagnostic list is written to .context-manager/scan-diagnostics.log next to graph.json on every scan. " +
-        "Persistence and in-memory publication succeed together; failed, empty, or cancelled scans preserve the previous graph.")]
+        "Persistence and in-memory publication succeed together; failed, empty, or cancelled scans preserve the previous graph. " +
+        "The graph query tools read graph.json by this solutionPath, so every session working on the solution sees the latest scan.")]
     public async Task<string> ProjectScanAsync(
         [Description("Absolute path to a .sln file to scan.")] string solutionPath,
         CancellationToken ct = default)
@@ -69,12 +72,11 @@ public sealed class ProjectScanTool
 
         try
         {
-            var dir = Path.GetDirectoryName(solutionPath) ?? string.Empty;
-            var outputDir = Path.Combine(dir, ".context-manager");
-            var graphJsonPath = Path.Combine(outputDir, "graph.json");
-            var diagnosticsLogPath = Path.Combine(outputDir, "scan-diagnostics.log");
+            var graphJsonPath = GraphRegistry.GetGraphPath(solutionPath);
+            var diagnosticsLogPath = Path.Combine(Path.GetDirectoryName(graphJsonPath)!, "scan-diagnostics.log");
             phase = "solution_evaluation_and_extraction";
             var result = await _builder.BuildWithReportAsync(
+                _registry.GetStore(solutionPath),
                 solutionPath,
                 (json, token) =>
                 {
