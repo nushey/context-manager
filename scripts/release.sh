@@ -2,31 +2,30 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# release.sh — publish a release: <branch> → main → NuGet.org → back to <branch>
+# release.sh — git-flow release: <feature|fix> → dev → release/vX.Y.Z → main
+#              → NuGet.org → dev synced onto main
 #
 # Usage:
-#   ./scripts/release.sh <version>
+#   ./scripts/release.sh patch|minor|major
 #
-# Example:
-#   ./scripts/release.sh 1.2.0
-#
-# Required env vars:
+# Run from a feature/* or fix/* branch. Required env vars:
 #   NUGET_API_KEY — NuGet.org API key
 #
-# Design: every validation that can fail runs BEFORE anything mutates state.
-# The only irreversible step (nuget push) happens after the package is built
-# and verified, and before any git ref reaches origin — so a failed publish
-# leaves nothing public to clean up.
+# Only the source branch reaches origin before the NuGet push; main, the tag
+# and dev are pushed after it. A failure before publishing restores every local
+# ref; a failure after it prints the remaining steps.
 #
 # Phases:
-#   A. Preflight  — inputs, tooling, remote reachability, tag/version/branch state
-#   B. Verify     — restore, build, test on the release branch
-#   C. Bump       — write <Version>, commit on the release branch
-#   D. Merge      — main fast-forwarded to origin, then --no-ff merge of the branch
-#   E. Package    — rebuild the MERGED tree, test it, pack, verify the exact nupkg
-#   F. Tag        — annotated v<version> on the merge commit
-#   G. Publish    — dotnet nuget push (point of no return)
-#   H. Propagate  — push main + tag, fast-forward the branch onto main, push it
+#   A. Preflight     — inputs, tooling, remote, tag/version/branch state
+#   B. Push source   — push the feature/fix branch
+#   C. Integrate     — merge it --no-ff into dev (local), test
+#   D. Release       — release/vX.Y.Z from dev, bump <Version>, commit
+#   E. Merge main    — main fast-forwarded to origin, --no-ff merge of release
+#   F. Package       — rebuild and test the merged tree, pack, verify nupkg
+#   G. Tag           — annotated vX.Y.Z on the merge commit
+#   H. Publish       — dotnet nuget push (point of no return)
+#   I. Propagate     — push main + tag, fast-forward dev onto main, push dev,
+#                      delete release/vX.Y.Z, return to the source branch
 # ---------------------------------------------------------------------------
 
 CSPROJ="src/ContextManager.Mcp/ContextManager.Mcp.csproj"
@@ -35,20 +34,45 @@ NUGET_SOURCE="https://api.nuget.org/v3/index.json"
 REMOTE="origin"
 PACK_DIR="./nupkgs"
 
-# ── helpers ──────────────────────────────────────────────────────────────────
 red()   { echo -e "\033[0;31m$*\033[0m"; }
 green() { echo -e "\033[0;32m$*\033[0m"; }
 bold()  { echo -e "\033[1m$*\033[0m"; }
 
 die() { red "ERROR: $*" >&2; exit 1; }
 
-# Rollback state — updated as the script advances so the trap knows how far it got.
-BRANCH_START_SHA=""
-MAIN_START_SHA=""
-TAG=""
-PUBLISHED=0
-PUSHED=0
+merge_subject() {
+  local subject="chore(release): merge $1 into $2"
+  if (( ${#subject} > 72 )); then
+    subject="chore(release): merge branch into $2"
+  fi
+  printf '%s' "$subject"
+}
+
+STAGE="preflight"
+SOURCE_BRANCH=""
 RELEASE_BRANCH=""
+RELEASE_CREATED=0
+DEV_START_SHA=""
+DEV_EXISTED=0
+MAIN_START_SHA=""
+MAIN_EXISTED=0
+VERSION=""
+TAG=""
+
+print_dev_steps() {
+  red "  git checkout dev && git merge --ff-only main && git push ${REMOTE} dev"
+  red "    (if ${REMOTE}/dev moved: git merge ${REMOTE}/dev on dev first, then merge main)"
+  red "  git checkout ${SOURCE_BRANCH} && git branch -D ${RELEASE_BRANCH}"
+}
+
+restore_ref() {
+  local name="$1" start="$2" existed="$3"
+  if [[ $existed -eq 1 ]]; then
+    git branch --quiet -f "$name" "$start" >/dev/null 2>&1 || true
+  else
+    git branch --quiet -D "$name" >/dev/null 2>&1 || true
+  fi
+}
 
 cleanup() {
   local code=$?
@@ -56,41 +80,61 @@ cleanup() {
 
   red "\n✗ Release aborted (exit ${code})."
 
-  if [[ $PUSHED -eq 1 ]]; then
-    red "Refs already reached ${REMOTE}. Nothing rolled back — finish by hand:"
-    red "  git checkout ${RELEASE_BRANCH} && git merge --ff-only main && git push ${REMOTE} ${RELEASE_BRANCH}"
-    return 0
-  fi
+  case "$STAGE" in
+    preflight)
+      red "Failed during preflight — no state was modified."
+      return 0
+      ;;
+    published)
+      red "${PACKAGE_ID} ${VERSION} IS PUBLISHED on NuGet.org but main and ${TAG} were not pushed."
+      red "Do NOT reuse this version — finish by hand:"
+      red "  git fetch ${REMOTE}"
+      red "  git checkout main && git merge ${REMOTE}/main   # only if it moved"
+      red "  git push ${REMOTE} main && git push ${REMOTE} ${TAG}"
+      print_dev_steps
+      return 0
+      ;;
+    main-pushed)
+      red "main and ${TAG} are on ${REMOTE}, but dev was not synced. Finish by hand:"
+      red "  git fetch ${REMOTE}"
+      print_dev_steps
+      return 0
+      ;;
+  esac
 
-  if [[ $PUBLISHED -eq 1 ]]; then
-    red "${PACKAGE_ID} ${VERSION} IS PUBLISHED on NuGet.org but git refs were not pushed."
-    red "Do NOT reuse this version. Push the local refs instead:"
-    red "  git push ${REMOTE} main && git push ${REMOTE} ${TAG}"
-    red "  git checkout ${RELEASE_BRANCH} && git merge --ff-only main && git push ${REMOTE} ${RELEASE_BRANCH}"
-    return 0
-  fi
-
-  if [[ -z "$BRANCH_START_SHA" ]]; then
-    red "Failed during preflight — no state was modified."
-    return 0
-  fi
-
-  bold "Nothing was published or pushed — rolling back local state..."
-  [[ -n "$TAG" ]] && git tag -d "$TAG" >/dev/null 2>&1 || true
+  bold "Nothing was published — rolling back local state..."
   git merge --abort >/dev/null 2>&1 || true
-  git checkout --quiet "$RELEASE_BRANCH" >/dev/null 2>&1 || true
-  [[ -n "$MAIN_START_SHA" ]]   && git branch --quiet -f main "$MAIN_START_SHA" >/dev/null 2>&1 || true
-  [[ -n "$BRANCH_START_SHA" ]] && git reset --hard --quiet "$BRANCH_START_SHA" >/dev/null 2>&1 || true
-  green "✓ Local state restored to ${RELEASE_BRANCH}@${BRANCH_START_SHA:0:8}"
+  git checkout --quiet --force "$SOURCE_BRANCH" >/dev/null 2>&1 || true
+
+  local head_now
+  head_now=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [[ "$head_now" != "$SOURCE_BRANCH" ]]; then
+    red "Could not switch back to ${SOURCE_BRANCH} (HEAD is on '${head_now}')."
+    red "Refusing to move refs under a checked-out branch. Recover by hand:"
+    red "  git merge --abort; git checkout --force ${SOURCE_BRANCH}"
+    [[ -n "$TAG" ]] && red "  git tag -d ${TAG}"
+    [[ $RELEASE_CREATED -eq 1 ]] && red "  git branch -D ${RELEASE_BRANCH}"
+    if [[ $MAIN_EXISTED -eq 1 ]]; then red "  git branch -f main ${MAIN_START_SHA}"; else red "  git branch -D main"; fi
+    if [[ $DEV_EXISTED -eq 1 ]]; then red "  git branch -f dev ${DEV_START_SHA}"; else red "  git branch -D dev"; fi
+    return 0
+  fi
+
+  [[ -n "$TAG" ]] && git tag -d "$TAG" >/dev/null 2>&1 || true
+  [[ $RELEASE_CREATED -eq 1 ]] && git branch --quiet -D "$RELEASE_BRANCH" >/dev/null 2>&1 || true
+  restore_ref main "$MAIN_START_SHA" "$MAIN_EXISTED"
+  restore_ref dev "$DEV_START_SHA" "$DEV_EXISTED"
+  green "✓ Local state restored: back on ${SOURCE_BRANCH}, main and dev at their starting commits"
+  red "  ${SOURCE_BRANCH} stays pushed to ${REMOTE}; dev on ${REMOTE} is untouched."
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# ═══ A. PREFLIGHT — no mutations past this block ══════════════════════════════
 bold "▶ Preflight checks..."
 
-[[ $# -eq 1 ]] || die "Usage: $0 <version>  (e.g. 1.2.0)"
-VERSION="$1"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Version must be semver: X.Y.Z"
+[[ $# -eq 1 ]] || die "Usage: $0 patch|minor|major"
+BUMP="$1"
+[[ "$BUMP" =~ ^(patch|minor|major)$ ]] || die "Bump must be one of: patch, minor, major"
 
 [[ -n "${NUGET_API_KEY:-}" ]] || die "NUGET_API_KEY env var is not set"
 
@@ -99,87 +143,104 @@ command -v git    >/dev/null || die "git not found"
 
 [[ -f "$CSPROJ" ]] || die "Run this script from the repository root ($CSPROJ not found)"
 
-RELEASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-[[ "$RELEASE_BRANCH" != "HEAD" ]] || die "Detached HEAD — check out the release branch first"
-[[ "$RELEASE_BRANCH" != "main" ]] || die "Already on main — run this from your dev/feature branch"
+SOURCE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+[[ "$SOURCE_BRANCH" == feature/* || "$SOURCE_BRANCH" == fix/* ]] \
+  || die "Run this from a feature/* or fix/* branch (HEAD is '${SOURCE_BRANCH}')"
 
 [[ -z "$(git status --porcelain --untracked-files=no)" ]] \
   || die "Working tree is dirty — commit or stash tracked changes first"
 
 CURRENT_VERSION=$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' "$CSPROJ" | head -1)
-[[ -n "$CURRENT_VERSION" ]] || die "No <Version> element found in $CSPROJ"
-[[ "$CURRENT_VERSION" != "$VERSION" ]] \
-  || die "$CSPROJ already declares ${VERSION} — pick a new version"
-
-# Highest version wins: refuse to go backwards.
-HIGHEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -1)
-[[ "$HIGHEST" == "$VERSION" ]] \
-  || die "Version ${VERSION} is older than the current ${CURRENT_VERSION}"
+[[ "$CURRENT_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] \
+  || die "<Version> in $CSPROJ is '${CURRENT_VERSION}', expected X.Y.Z"
+MAJOR="${BASH_REMATCH[1]}"
+MINOR="${BASH_REMATCH[2]}"
+PATCH="${BASH_REMATCH[3]}"
+case "$BUMP" in
+  major) VERSION="$((MAJOR + 1)).0.0" ;;
+  minor) VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+  patch) VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+esac
 
 TAG="v${VERSION}"
+RELEASE_BRANCH="release/${TAG}"
 if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
-  die "Tag ${TAG} already exists locally — delete it or pick a new version"
+  die "Tag ${TAG} already exists locally — delete it or pick another bump"
 fi
 
-# Remote reachability + credentials, and remote tag collision, in one round trip.
 bold "  Contacting ${REMOTE}..."
 git ls-remote --exit-code "$REMOTE" >/dev/null 2>&1 \
   || die "Cannot reach ${REMOTE} — check network and credentials"
 [[ -z "$(git ls-remote --tags "$REMOTE" "refs/tags/${TAG}")" ]] \
   || die "Tag ${TAG} already exists on ${REMOTE} — that version was already released"
 
-git fetch --quiet --prune "$REMOTE" "main" "$RELEASE_BRANCH" 2>/dev/null \
-  || git fetch --quiet --prune "$REMOTE" \
-  || die "git fetch from ${REMOTE} failed"
+git fetch --quiet --prune "$REMOTE" || die "git fetch from ${REMOTE} failed"
 
-git rev-parse --verify --quiet "refs/remotes/${REMOTE}/main" >/dev/null \
-  || die "${REMOTE}/main does not exist"
+git rev-parse --verify --quiet "refs/remotes/${REMOTE}/main" >/dev/null || die "${REMOTE}/main does not exist"
+git rev-parse --verify --quiet "refs/remotes/${REMOTE}/dev"  >/dev/null || die "${REMOTE}/dev does not exist"
 
-# The release branch must contain everything on its own remote counterpart.
-if git rev-parse --verify --quiet "refs/remotes/${REMOTE}/${RELEASE_BRANCH}" >/dev/null; then
-  git merge-base --is-ancestor "${REMOTE}/${RELEASE_BRANCH}" HEAD \
-    || die "${RELEASE_BRANCH} is behind ${REMOTE}/${RELEASE_BRANCH} — pull and rerun"
+if git rev-parse --verify --quiet "refs/remotes/${REMOTE}/${SOURCE_BRANCH}" >/dev/null; then
+  git merge-base --is-ancestor "${REMOTE}/${SOURCE_BRANCH}" HEAD \
+    || die "${SOURCE_BRANCH} is behind ${REMOTE}/${SOURCE_BRANCH} — pull and rerun"
 fi
 
-# main must be fast-forwardable to its remote, and the branch must be ahead of main.
-if git rev-parse --verify --quiet refs/heads/main >/dev/null; then
-  git merge-base --is-ancestor main "${REMOTE}/main" \
-    || die "Local main has commits not on ${REMOTE}/main — reconcile main first"
-fi
-git merge-base --is-ancestor "${REMOTE}/main" HEAD \
-  || die "${RELEASE_BRANCH} does not contain ${REMOTE}/main — merge main into ${RELEASE_BRANCH} first"
+for branch in main dev; do
+  if git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
+    git merge-base --is-ancestor "$branch" "${REMOTE}/${branch}" \
+      || die "Local ${branch} has commits not on ${REMOTE}/${branch} — reconcile ${branch} first"
+  fi
+done
 
-BRANCH_START_SHA=$(git rev-parse HEAD)
 MAIN_START_SHA=$(git rev-parse --verify --quiet refs/heads/main || true)
+[[ -n "$MAIN_START_SHA" ]] && MAIN_EXISTED=1
+DEV_START_SHA=$(git rev-parse --verify --quiet refs/heads/dev || true)
+[[ -n "$DEV_START_SHA" ]] && DEV_EXISTED=1
 
-green "✓ Preflight passed — releasing ${TAG} from '${RELEASE_BRANCH}' (was ${CURRENT_VERSION})"
+STAGE="local"
+green "✓ Preflight passed — releasing ${TAG} (${BUMP} from ${CURRENT_VERSION}) from '${SOURCE_BRANCH}'"
 
-# ═══ B. VERIFY ════════════════════════════════════════════════════════════════
-bold "\n▶ Restoring and testing '${RELEASE_BRANCH}'..."
+bold "\n▶ Pushing '${SOURCE_BRANCH}'..."
+git push "$REMOTE" "$SOURCE_BRANCH" || die "Failed to push ${SOURCE_BRANCH}"
+green "✓ ${SOURCE_BRANCH} pushed"
+
+bold "\n▶ Merging '${SOURCE_BRANCH}' into dev..."
+git checkout --quiet dev
+git merge --ff-only --quiet "${REMOTE}/dev" || die "dev could not fast-forward to ${REMOTE}/dev"
+git merge --no-ff "$SOURCE_BRANCH" \
+  -m "$(merge_subject "$SOURCE_BRANCH" dev)" \
+  -m "Release ${TAG} from ${SOURCE_BRANCH}" \
+  || die "Merging ${SOURCE_BRANCH} into dev failed — resolve it on ${SOURCE_BRANCH} and rerun"
+MERGED_ORIGIN_DEV=$(git rev-parse "${REMOTE}/dev")
+green "✓ dev merged (local)"
+
+bold "\n▶ Restoring and testing dev..."
 dotnet restore || die "dotnet restore failed"
-dotnet test -c Release --logger "console;verbosity=minimal" \
-  || die "Tests failed on ${RELEASE_BRANCH} — fix them before releasing"
+dotnet test -c Release --no-restore --logger "console;verbosity=minimal" \
+  || die "Tests failed on dev after merging ${SOURCE_BRANCH}"
 green "✓ Tests passed"
 
-# ═══ C. BUMP ══════════════════════════════════════════════════════════════════
-bold "\n▶ Bumping version ${CURRENT_VERSION} → ${VERSION}..."
+bold "\n▶ Creating ${RELEASE_BRANCH} and bumping ${CURRENT_VERSION} → ${VERSION}..."
+git checkout --quiet -b "$RELEASE_BRANCH" dev
+RELEASE_CREATED=1
 sed -i "s|<Version>${CURRENT_VERSION}</Version>|<Version>${VERSION}</Version>|" "$CSPROJ"
 grep -q "<Version>${VERSION}</Version>" "$CSPROJ" || die "Version bump did not apply to $CSPROJ"
-
 git add "$CSPROJ"
 git commit --quiet -m "chore(release): bump version to ${VERSION}"
 green "✓ Bumped and committed on ${RELEASE_BRANCH}"
 
-# ═══ D. MERGE ═════════════════════════════════════════════════════════════════
 bold "\n▶ Merging '${RELEASE_BRANCH}' into main..."
+git fetch --quiet --prune "$REMOTE" main dev || die "git fetch from ${REMOTE} failed"
+git merge-base --is-ancestor "${REMOTE}/main" HEAD \
+  || die "${REMOTE}/main is not contained in dev — merge main into dev and rerun"
 git checkout --quiet main
-git merge --ff-only "${REMOTE}/main" || die "main could not fast-forward to ${REMOTE}/main"
+git merge --ff-only --quiet "${REMOTE}/main" || die "main could not fast-forward to ${REMOTE}/main"
 git merge --no-ff "$RELEASE_BRANCH" \
-  -m "chore(release): merge ${RELEASE_BRANCH} into main for v${VERSION}" \
+  -m "$(merge_subject "$RELEASE_BRANCH" main)" \
+  -m "Release ${TAG} from ${SOURCE_BRANCH}" \
   || die "Merge into main failed"
-green "✓ main merged"
+MERGED_ORIGIN_MAIN=$(git rev-parse "${REMOTE}/main")
+green "✓ main merged (local)"
 
-# ═══ E. PACKAGE — rebuild and retest the MERGED tree, never the pre-merge one ══
 bold "\n▶ Rebuilding and testing the merged tree..."
 dotnet build -c Release || die "Release build of the merged tree failed"
 dotnet test -c Release --no-build --logger "console;verbosity=minimal" \
@@ -190,37 +251,44 @@ bold "\n▶ Packing ${PACKAGE_ID} ${VERSION}..."
 NUPKG="${PACK_DIR}/${PACKAGE_ID}.${VERSION}.nupkg"
 rm -f "$NUPKG"
 dotnet pack "$CSPROJ" -c Release --no-build -o "$PACK_DIR" || die "dotnet pack failed"
-# Strict: only the exact expected artifact ships. Never fall back to a stale nupkg.
 [[ -f "$NUPKG" ]] || die "Expected package $NUPKG was not produced by dotnet pack"
 green "✓ Packed $NUPKG"
 
-# ═══ F. TAG ═══════════════════════════════════════════════════════════════════
 git tag -a "$TAG" -m "Release ${TAG}"
 green "✓ Tagged ${TAG}"
 
-# ═══ G. PUBLISH — point of no return ══════════════════════════════════════════
+bold "\n▶ Final check before the irreversible step..."
+git fetch --quiet --prune "$REMOTE" main dev || die "git fetch from ${REMOTE} failed"
+[[ "$(git rev-parse "${REMOTE}/main")" == "$MERGED_ORIGIN_MAIN" ]] \
+  || die "${REMOTE}/main moved during the release — aborting BEFORE publishing. Rerun."
+[[ "$(git rev-parse "${REMOTE}/dev")" == "$MERGED_ORIGIN_DEV" ]] \
+  || die "${REMOTE}/dev moved during the release — aborting BEFORE publishing. Rerun."
+green "✓ ${REMOTE}/main and ${REMOTE}/dev are still at the commits we merged"
+
 bold "\n▶ Publishing ${NUPKG} to NuGet.org..."
 dotnet nuget push "$NUPKG" \
   --api-key "$NUGET_API_KEY" \
   --source "$NUGET_SOURCE" \
   --skip-duplicate \
-  || die "NuGet push failed — nothing was pushed to ${REMOTE}, local state will be rolled back"
-PUBLISHED=1
+  || die "NuGet push failed — nothing was published"
+STAGE="published"
 green "✓ Published ${PACKAGE_ID} ${VERSION}"
 
-# ═══ H. PROPAGATE — main, tag, and the release branch all end up in sync ══════
 bold "\n▶ Pushing main and ${TAG}..."
 git push "$REMOTE" main || die "Failed to push main"
 git push "$REMOTE" "$TAG" || die "Failed to push ${TAG}"
-PUSHED=1
+STAGE="main-pushed"
 
-bold "\n▶ Syncing '${RELEASE_BRANCH}' with main..."
-git checkout --quiet "$RELEASE_BRANCH"
-git merge --ff-only main || die "${RELEASE_BRANCH} could not fast-forward onto main"
-git push "$REMOTE" "$RELEASE_BRANCH" || die "Failed to push ${RELEASE_BRANCH}"
-green "✓ ${RELEASE_BRANCH} and main are identical and both pushed"
+bold "\n▶ Syncing dev onto main..."
+git checkout --quiet dev
+git merge --ff-only --quiet main || die "dev could not fast-forward onto main"
+git push "$REMOTE" dev || die "Failed to push dev"
+
+git checkout --quiet "$SOURCE_BRANCH"
+git branch --quiet -D "$RELEASE_BRANCH"
+STAGE="done"
 
 green "\n✓ Release ${TAG} complete"
-bold "  Branch:  ${RELEASE_BRANCH} == main == ${TAG}"
+bold "  dev == main == ${TAG}, all pushed to ${REMOTE}"
 bold "  Install: dotnet tool install -g ${PACKAGE_ID}"
 bold "  Update:  dotnet tool update -g ${PACKAGE_ID}"
