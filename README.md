@@ -101,8 +101,8 @@ claude mcp add context-manager -- context-manager
 }
 ```
 
-For exact config-file paths (per OS), the array-style schema some clients use, and the
-pre-loaded-graph variants, see **[INSTALL.md](INSTALL.md)**:
+For exact config-file paths (per OS) and the array-style schema some clients use, see
+**[INSTALL.md](INSTALL.md)**:
 
 | Client | Config file | Setup |
 |--------|-------------|-------|
@@ -148,9 +148,9 @@ Parameters and output shapes are documented in [How It Works](#how-it-works), th
 The starting point is always a file the user mentions. From there:
 
 1. **`inspect_file(path)`** → read the type → construct its node ID as `namespace.TypeName`.
-2. **`graph_get_dependencies(nodeId)`** → discover which adjacent files matter for context.
+2. **`graph_get_dependencies(solutionPath, nodeId)`** → discover which adjacent files matter for context.
 3. **`inspect_file`** the relevant neighbors — only those, nothing else.
-4. **`graph_impact_analysis(nodeId)`** → assess the blast radius *before* changing anything.
+4. **`graph_impact_analysis(solutionPath, nodeId)`** → assess the blast radius *before* changing anything.
 
 > **`graph_impact_analysis` is a risk-calibration tool, not a verification checklist.** A large
 > result (50+ nodes) means the type's public contract is load-bearing and must be preserved — not
@@ -164,7 +164,10 @@ project_scan("/abs/path/to/MyApp.sln")
 → "Scan complete. 340 nodes, 850 edges."
 ```
 
-The graph is saved to `/abs/path/to/.context-manager/graph.json` and kept in memory for the session.
+The graph is saved to `/abs/path/to/.context-manager/graph.json`. Every graph tool takes the same
+`solutionPath`, so any session or agent working on that solution queries the latest scan without
+configuration: the graph is loaded on first use and reloaded whenever `graph.json` changes. One
+server process can query several solutions side by side.
 
 ---
 
@@ -177,7 +180,7 @@ counts edges of each kind; `direction` is `in` (the neighbor depends on the quer
 `inspect_file` is canonical for those.
 
 ```json
-// graph_get_dependencies("MyApp.Orders.OrderService")
+// graph_get_dependencies("/abs/path/to/MyApp.sln", "MyApp.Orders.OrderService")
 [
   { "id": "MyApp.Orders.IOrderRepository", "kind": "Interface", "direction": "out", "edgeKinds": { "INJECTS": 1, "CALLS": 3 } },
   { "id": "MyApp.Orders.IEventBus",        "kind": "Interface", "direction": "out", "edgeKinds": { "INJECTS": 1 } },
@@ -192,7 +195,7 @@ type, so a static helper shows its real consumers instead of an empty list.
 contained; a long list means the public contract is load-bearing.
 
 ```json
-// graph_impact_analysis("MyApp.Orders.IOrderRepository")
+// graph_impact_analysis("/abs/path/to/MyApp.sln", "MyApp.Orders.IOrderRepository")
 [
   "MyApp.Orders.OrderService",
   "MyApp.Api.OrdersController",
@@ -203,7 +206,7 @@ contained; a long list means the public contract is load-bearing.
 **`graph_path_find`** — how does the request reach the database?
 
 ```json
-// graph_path_find("MyApp.Api.OrdersController", "MyApp.Infrastructure.SqlOrderRepository")
+// graph_path_find("/abs/path/to/MyApp.sln", "MyApp.Api.OrdersController", "MyApp.Infrastructure.SqlOrderRepository")
 [
   "MyApp.Api.OrdersController",
   "MyApp.Orders.OrderService",
@@ -221,34 +224,6 @@ exact string returned by `graph_get_dependencies` or `graph_impact_analysis` as 
 - `MyApp.Orders.IOrderRepository`
 - `MyApp.Orders.OrderService.GetOrderAsync(System.Guid)`
 
-### Pre-loading the graph at startup
-
-To make the graph available immediately without calling `project_scan` manually, pass it at
-startup. The `--graph` arg and `CONTEXT_MANAGER_GRAPH_PATH` env var apply to **every** client —
-see [INSTALL.md](INSTALL.md) for each client's syntax.
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": { "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json" }
-    }
-  }
-}
-```
-
 ---
 
 ## FAQ
@@ -264,7 +239,7 @@ see [INSTALL.md](INSTALL.md) for each client's syntax.
 > **Where is state stored? Is it stateful?**
 > `inspect_file` and `inspect_context` are pure functions of the files you pass — zero state. The
 > only persistence is the knowledge graph, written by `project_scan` to
-> `<solution-root>/.context-manager/graph.json`. Pre-load it at startup or rebuild it any time.
+> `<solution-root>/.context-manager/graph.json`. Graph tools read it by `solutionPath`; rescan any time.
 
 > **Does it read my whole solution or follow `<ProjectReference>` edges?**
 > Only `project_scan` is solution-wide. `inspect_file` / `inspect_context` are scoped strictly to

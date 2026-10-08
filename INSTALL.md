@@ -57,17 +57,6 @@ start:
 All snippets below use the bare `context-manager` command. Swap in the absolute path if your client
 cannot find it on `PATH`.
 
-### Optional: pre-load a graph at startup
-
-`project_scan` builds and persists `<solution-root>/.context-manager/graph.json`. To make that graph
-available immediately on every launch — instead of re-running `project_scan` — pass it at startup via
-**either**:
-
-- **Argument:** `--graph <abs-path-to-graph.json>`
-- **Environment variable:** `CONTEXT_MANAGER_GRAPH_PATH=<abs-path-to-graph.json>`
-
-Each client section shows where these go.
-
 ---
 
 ## 3. Client configuration
@@ -115,25 +104,6 @@ command = "context-manager"
 args = []
 ```
 
-**With a pre-loaded graph (argument form):**
-
-```toml
-[mcp_servers.context-manager]
-command = "context-manager"
-args = ["--graph", "/abs/path/to/.context-manager/graph.json"]
-```
-
-**Or via environment variable:**
-
-```toml
-[mcp_servers.context-manager]
-command = "context-manager"
-args = []
-
-[mcp_servers.context-manager.env]
-CONTEXT_MANAGER_GRAPH_PATH = "/abs/path/to/.context-manager/graph.json"
-```
-
 ---
 
 ### Antigravity
@@ -160,34 +130,6 @@ Google Antigravity (IDE, CLI, and Antigravity 2.0) share a central **JSON** conf
   "mcpServers": {
     "context-manager": {
       "command": "context-manager"
-    }
-  }
-}
-```
-
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
     }
   }
 }
@@ -225,37 +167,6 @@ schema: `command` is an **array**, env vars use `environment`, and each server h
 }
 ```
 
-**With a pre-loaded graph (argument appended to the `command` array):**
-
-```jsonc
-{
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager", "--graph", "/abs/path/to/.context-manager/graph.json"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```jsonc
-{
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager"],
-      "environment": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
 ---
 
 ### Cursor
@@ -282,36 +193,6 @@ Cursor uses **JSON** under the `mcpServers` key. Global config applies everywher
   }
 }
 ```
-
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
-    }
-  }
-}
-```
-
-> After saving, open **Cursor Settings → MCP** and confirm `context-manager` shows a green/active status.
 
 ---
 
@@ -340,37 +221,6 @@ Servers → View raw config**, or edit the file directly.
 }
 ```
 
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable.** Windsurf also supports interpolation in `command`/`args`/`env`
-(`${env:VAR_NAME}` and `${file:/path}`):
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
-    }
-  }
-}
-```
-
-> After any change, **quit Windsurf completely and reopen it** — a window reload is not enough.
-
 ---
 
 ### Opencode
@@ -395,39 +245,6 @@ Opencode uses **JSON** under the `mcp` key. Like Kilo Code, `command` is an **ar
     "context-manager": {
       "type": "local",
       "command": ["context-manager"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**With a pre-loaded graph (argument appended to the `command` array):**
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager", "--graph", "/abs/path/to/.context-manager/graph.json"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager"],
-      "environment": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      },
       "enabled": true
     }
   }

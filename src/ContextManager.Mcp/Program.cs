@@ -32,7 +32,7 @@ builder.Services
     .AddSingleton<FileAnalyzer>()
     .AddSingleton<CrossReferenceResolver>()
     .AddSingleton<ContextAnalyzer>()
-    .AddSingleton<GraphStore>()
+    .AddSingleton<GraphRegistry>()
     .AddSingleton<EdgeExtractor>()
     .AddSingleton<GraphBuilder>()
     .AddMcpServer()
@@ -41,32 +41,4 @@ builder.Services
 
 var host = builder.Build();
 
-var graphPath = ResolveGraphPath(args);
-if (graphPath is not null && File.Exists(graphPath))
-{
-    try
-    {
-        var store = host.Services.GetRequiredService<GraphStore>();
-        store.Deserialize(await File.ReadAllTextAsync(graphPath));
-    }
-    catch (Exception ex)
-    {
-        // stderr is safe under the MCP stdio protocol — stdout is reserved for JSON-RPC frames.
-        Console.Error.WriteLine($"Failed to load graph cache from '{graphPath}': {ex.Message}. Continuing with an empty graph.");
-    }
-}
-
 await host.RunAsync();
-
-static string? ResolveGraphPath(string[] args)
-{
-    // Check --graph <path> CLI argument first.
-    for (var i = 0; i < args.Length - 1; i++)
-    {
-        if (args[i].Equals("--graph", StringComparison.OrdinalIgnoreCase))
-            return args[i + 1];
-    }
-
-    // Fall back to environment variable.
-    return Environment.GetEnvironmentVariable("CONTEXT_MANAGER_GRAPH_PATH");
-}

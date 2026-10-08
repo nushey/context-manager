@@ -32,7 +32,7 @@ The system follows a two-layer architecture: an **MCP layer** (`ContextManager.M
 
 **Multi-file flow** (`inspect_context`): `InspectContextTool` validates input (≤15 files, all paths must exist) → delegates to `ContextAnalyzer`, which reads each file, builds a `CSharpCompilation` from source texts **plus statically-cached framework metadata references** (so BCL types resolve and are excluded from `unresolved`), and reuses `TypeExtractor` for AST walking → `CrossReferenceResolver` uses the `SemanticModel` to resolve constructor dependencies, interface implementations, base types, and method parameter types to their declaring files within the set → compressed results (methods as one-line strings via `MethodSignatureFormatter`, no properties) are serialized and returned as JSON.
 
-**Graph flow** (`project_scan` → query tools): `ProjectScanTool` lazily registers MSBuild via `MsBuildBootstrap`, then `GraphBuilder` loads the solution, runs `EdgeExtractor` per document to emit typed edges (`CONTAINS`, `IMPLEMENTS`, `INHERITS`, `INJECTS`, `CALLS`, `RETURNS`, `REFERENCES` — constructed generics collapse to their open definition), and populates `GraphStore` (QuikGraph bidirectional graph), persisted to `<solution-root>/.context-manager/graph.json` and hydratable at startup. Query tools delegate to `GraphStore`: `GraphGetDependenciesTool` → `GetAggregatedNeighbors` (member edges roll up to the declaring type, one entry per neighbor/direction with `edgeKinds` counts, self-`CONTAINS` excluded), `GraphImpactAnalysisTool` → `ImpactBackward` (transitive backward BFS with member roll-up, continuous interface bridging, inbound-`IMPLEMENTS` traversal, and a reflection-blind-spot diagnostic), `GraphPathFindTool` → `ShortestPath`.
+**Graph flow** (`project_scan` → query tools): `ProjectScanTool` lazily registers MSBuild via `MsBuildBootstrap`, then `GraphBuilder` loads the solution, runs `EdgeExtractor` per document to emit typed edges (`CONTAINS`, `IMPLEMENTS`, `INHERITS`, `INJECTS`, `CALLS`, `RETURNS`, `REFERENCES` — constructed generics collapse to their open definition), and populates the solution's `GraphStore` (QuikGraph bidirectional graph) obtained from `GraphRegistry`, persisted to `<solution-root>/.context-manager/graph.json`. Every query tool takes a mandatory `solutionPath`; `GraphRegistry.TryLoad` returns that solution's `GraphStore`, loading `graph.json` on first use and reloading it whenever its last-write time changes, so any session or agent working on the solution sees the latest scan with no configuration (missing file → `graph_not_found`). Query tools then delegate to that `GraphStore`: `GraphGetDependenciesTool` → `GetAggregatedNeighbors` (member edges roll up to the declaring type, one entry per neighbor/direction with `edgeKinds` counts, self-`CONTAINS` excluded), `GraphImpactAnalysisTool` → `ImpactBackward` (transitive backward BFS with member roll-up, continuous interface bridging, inbound-`IMPLEMENTS` traversal, and a reflection-blind-spot diagnostic), `GraphPathFindTool` → `ShortestPath`.
 
 **Architectural anchors:**
 - `TypeExtractor` — the only `CSharpSyntaxWalker` subclass; owns tree traversal. All new type-visit logic goes here.
@@ -42,6 +42,7 @@ The system follows a two-layer architecture: an **MCP layer** (`ContextManager.M
 - `ContextAnalyzer` — multi-file orchestration entry point; builds the referenced `CSharpCompilation`, drives `CrossReferenceResolver`, returns `ContextAnalysis`.
 - `CrossReferenceResolver` — resolves structural references using the `SemanticModel`; in-set references get a `resolvedFile`, unknown user types land in `unresolved` (BCL/metadata types are filtered out).
 - `GraphStore` — owns ALL graph queries (neighbors, impact, paths, serialization). New graph semantics go here, reusing its private helpers (`GetContainedMembers`, `IsMemberNode`, `GetDeclaringType`).
+- `GraphRegistry` — one `GraphStore` per solution, keyed by full `.sln` path; the single source of truth for the `graph.json` location (`GetGraphPath`) and for loading/reloading it. `ProjectScanTool` builds into `GetStore(solutionPath)`; query tools read through `TryLoad(solutionPath)`. Never inject a bare `GraphStore` into tools.
 - `EdgeExtractor` — the only place edges are created; edge-granularity decisions (type-level vs member-level sources) live here.
 - MCP boundaries: `InspectFileTool`, `InspectContextTool` (input validation), `ProjectScanTool`, `GraphGetDependenciesTool`, `GraphImpactAnalysisTool`, `GraphPathFindTool` — all decorated with `McpServerToolType`.
 
@@ -50,12 +51,12 @@ The system follows a two-layer architecture: an **MCP layer** (`ContextManager.M
 **Extending the extraction pipeline:**
 - New extractor classes live in `src/ContextManager.Analysis/Extraction/` and follow the `<Concern>Extractor` naming pattern (shared helpers like `ConstructorParameterLocator` are the exception).
 - Roslyn tree walkers MUST extend `CSharpSyntaxWalker`, not implement custom recursion.
-- Graph logic lives in `src/ContextManager.Analysis/Graph/` — query semantics in `GraphStore`, edge creation in `EdgeExtractor`. MCP graph tools only project results to contracts.
+- Graph logic lives in `src/ContextManager.Analysis/Graph/` — query semantics in `GraphStore`, per-solution store lookup and `graph.json` loading in `GraphRegistry`, edge creation in `EdgeExtractor`. `GraphBuilder` receives the target `GraphStore` per build. MCP graph tools only project results to contracts.
 - New MCP tools live in `src/ContextManager.Mcp/Tools/` and MUST be decorated with `McpServerToolType`. Parameters use `[Description("...")]` attributes for MCP metadata. Tool `[Description]` texts are part of the contract — keep them accurate when behavior changes.
 - DTO/output contracts live in `src/ContextManager.Mcp/Serialization/` as `record` types with no behavior.
 - New output fields on model records are additive nullable with `= null` default; empty collections become `null` (`NullIfEmpty` pattern) so JSON omits them via `WhenWritingNull`.
 
-**Constructor injection**: analyzers, the graph stack (`GraphStore`, `GraphBuilder`, `EdgeExtractor`), and tools are wired through the host's DI container. New components are registered there and injected — not `new`-ed inside callers.
+**Constructor injection**: analyzers, the graph stack (`GraphRegistry`, `GraphBuilder`, `EdgeExtractor`), and tools are wired through the host's DI container. New components are registered there and injected — not `new`-ed inside callers.
 
 **Async and cancellation**: all `async` methods return `Task`/`Task<T>` and accept `CancellationToken` as the last parameter. Pass it through to Roslyn APIs.
 
@@ -127,11 +128,6 @@ Feature work flows through `.spec/<slug>/` in five phases: scope → design → 
 
 ## Keeping AGENTS.md Up to Date
 
-This file is generated and maintained by the `agents-md-generator` MCP tool.
-**Never edit it manually.** To regenerate after code changes, ask your AI assistant:
-
-> "Update the AGENTS.md for this project"
-
-The assistant will invoke the `generate_agents_md` tool automatically, perform an
-incremental scan of changed files, and rewrite only the affected sections.
-To force a full rescan from scratch: "Regenerate the AGENTS.md from scratch".
+This file is maintained by hand. Do not regenerate it with `agents-md-generator` or any other
+generator. When a change alters the architecture, anchors, conventions, or commands described here,
+update only the affected sections in the same change.
