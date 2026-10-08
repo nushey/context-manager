@@ -496,3 +496,5 @@ nupkgs/
 # End of https://www.toptal.com/developers/gitignore/api/rider,csharp,dotnetcore
 .mcp.json
 .context-manager/
+
+Finding.md

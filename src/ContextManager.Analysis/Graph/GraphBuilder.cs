@@ -8,27 +8,20 @@ namespace ContextManager.Analysis.Graph;
 
 public class GraphBuilder
 {
-    private readonly GraphStore _store;
     private readonly EdgeExtractor _edgeExtractor;
 
-    public GraphBuilder(GraphStore store, EdgeExtractor edgeExtractor)
+    public GraphBuilder(EdgeExtractor edgeExtractor)
     {
-        _store = store;
         _edgeExtractor = edgeExtractor;
     }
 
-    public async Task<GraphStore> BuildAsync(string solutionPath, CancellationToken ct = default)
-    {
-        await BuildWithReportAsync(solutionPath, null, ct);
-        return _store;
-    }
-
     public async Task<GraphBuildResult> BuildWithReportAsync(
+        GraphStore store,
         string solutionPath,
         Func<string, CancellationToken, Task>? persistSnapshot,
         CancellationToken ct = default)
     {
-        await _store.BeginRebuildAsync(ct);
+        await store.BeginRebuildAsync(ct);
         var rebuildActive = true;
         try
         {
@@ -93,11 +86,11 @@ public class GraphBuilder
 
                     var model = compilation.GetSemanticModel(syntaxTree);
 
-                    HarvestNodes(model, root, ct);
+                    HarvestNodes(store, model, root, ct);
 
                     var edges = _edgeExtractor.Extract(model, root, ct);
                     foreach (var edge in edges)
-                        _store.AddEdge(edge);
+                        store.AddEdge(edge);
 
                     loadedDocuments++;
                 }
@@ -109,7 +102,7 @@ public class GraphBuilder
             var hasFailures = diagnosticSnapshot.Any(d => d.Kind == WorkspaceDiagnosticKind.Failure.ToString());
             var status = loadedProjects == 0 || loadedDocuments == 0
                 ? "failed"
-                : _store.RebuildNodeCount == 0
+                : store.RebuildNodeCount == 0
                     ? "empty"
                     : hasFailures || unsupportedProjects > 0 || skippedDocuments > 0
                         ? "partial"
@@ -124,33 +117,33 @@ public class GraphBuilder
                 totalDocuments,
                 loadedDocuments,
                 skippedDocuments,
-                _store.RebuildNodeCount,
-                _store.RebuildEdgeCount,
+                store.RebuildNodeCount,
+                store.RebuildEdgeCount,
                 diagnosticSnapshot);
 
             if (status is "failed" or "empty")
             {
-                _store.AbortRebuild();
+                store.AbortRebuild();
                 rebuildActive = false;
                 return result;
             }
 
             if (persistSnapshot is not null)
-                await persistSnapshot(_store.SerializeRebuild(), ct);
+                await persistSnapshot(store.SerializeRebuild(), ct);
 
-            _store.CommitRebuild();
+            store.CommitRebuild();
             rebuildActive = false;
             return result;
         }
         catch
         {
             if (rebuildActive)
-                _store.AbortRebuild();
+                store.AbortRebuild();
             throw;
         }
     }
 
-    private void HarvestNodes(SemanticModel model, CompilationUnitSyntax root, CancellationToken ct)
+    private static void HarvestNodes(GraphStore store, SemanticModel model, CompilationUnitSyntax root, CancellationToken ct)
     {
         var typeDeclarations = root.DescendantNodes().OfType<TypeDeclarationSyntax>();
 
@@ -164,7 +157,7 @@ public class GraphBuilder
             if (typeNode is null)
                 continue;
 
-            _store.AddNode(typeNode);
+            store.AddNode(typeNode);
 
             foreach (var memberDecl in typeDecl.Members)
             {
@@ -176,7 +169,7 @@ public class GraphBuilder
                         if (methodSymbol is null) continue;
                         var methodNode = NodeClassifier.NodeFor(methodSymbol);
                         if (methodNode is not null)
-                            _store.AddNode(methodNode);
+                            store.AddNode(methodNode);
                         break;
                     }
                     case PropertyDeclarationSyntax propertyDecl:
@@ -185,7 +178,7 @@ public class GraphBuilder
                         if (propSymbol is null) continue;
                         var propNode = NodeClassifier.NodeFor(propSymbol);
                         if (propNode is not null)
-                            _store.AddNode(propNode);
+                            store.AddNode(propNode);
                         break;
                     }
                 }

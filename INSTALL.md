@@ -16,8 +16,10 @@ supported client. ContextManager ships as a **.NET global tool** that speaks MCP
 - That is the only requirement for `inspect_file` and `inspect_context`. No Python, Node, or Docker.
 - **`project_scan` on `.NET Framework 4.8` solutions (Windows only)** additionally needs the
   MSBuild toolchain + Framework 4.8 targeting pack — install
-  [Visual Studio Build Tools 2022/2025](https://visualstudio.microsoft.com/downloads/) with the
-  **.NET desktop build tools** workload. MSBuild 17.x and 18.x are both supported.
+  [Visual Studio Build Tools 2022/2026](https://visualstudio.microsoft.com/downloads/) with the
+  **.NET desktop build tools** workload. These projects are evaluated with the MSBuild of the
+  newest installed Visual Studio / Build Tools (17.x or 18.x), so a Visual Studio update can
+  require a newer ContextManager release.
   `inspect_file` / `inspect_context` work on any platform regardless of target framework.
 
 ---
@@ -54,17 +56,6 @@ start:
 
 All snippets below use the bare `context-manager` command. Swap in the absolute path if your client
 cannot find it on `PATH`.
-
-### Optional: pre-load a graph at startup
-
-`project_scan` builds and persists `<solution-root>/.context-manager/graph.json`. To make that graph
-available immediately on every launch — instead of re-running `project_scan` — pass it at startup via
-**either**:
-
-- **Argument:** `--graph <abs-path-to-graph.json>`
-- **Environment variable:** `CONTEXT_MANAGER_GRAPH_PATH=<abs-path-to-graph.json>`
-
-Each client section shows where these go.
 
 ---
 
@@ -113,25 +104,6 @@ command = "context-manager"
 args = []
 ```
 
-**With a pre-loaded graph (argument form):**
-
-```toml
-[mcp_servers.context-manager]
-command = "context-manager"
-args = ["--graph", "/abs/path/to/.context-manager/graph.json"]
-```
-
-**Or via environment variable:**
-
-```toml
-[mcp_servers.context-manager]
-command = "context-manager"
-args = []
-
-[mcp_servers.context-manager.env]
-CONTEXT_MANAGER_GRAPH_PATH = "/abs/path/to/.context-manager/graph.json"
-```
-
 ---
 
 ### Antigravity
@@ -158,34 +130,6 @@ Google Antigravity (IDE, CLI, and Antigravity 2.0) share a central **JSON** conf
   "mcpServers": {
     "context-manager": {
       "command": "context-manager"
-    }
-  }
-}
-```
-
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
     }
   }
 }
@@ -223,37 +167,6 @@ schema: `command` is an **array**, env vars use `environment`, and each server h
 }
 ```
 
-**With a pre-loaded graph (argument appended to the `command` array):**
-
-```jsonc
-{
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager", "--graph", "/abs/path/to/.context-manager/graph.json"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```jsonc
-{
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager"],
-      "environment": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
 ---
 
 ### Cursor
@@ -280,36 +193,6 @@ Cursor uses **JSON** under the `mcpServers` key. Global config applies everywher
   }
 }
 ```
-
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
-    }
-  }
-}
-```
-
-> After saving, open **Cursor Settings → MCP** and confirm `context-manager` shows a green/active status.
 
 ---
 
@@ -338,37 +221,6 @@ Servers → View raw config**, or edit the file directly.
 }
 ```
 
-**With a pre-loaded graph:**
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "args": ["--graph", "/abs/path/to/.context-manager/graph.json"]
-    }
-  }
-}
-```
-
-**Or via environment variable.** Windsurf also supports interpolation in `command`/`args`/`env`
-(`${env:VAR_NAME}` and `${file:/path}`):
-
-```json
-{
-  "mcpServers": {
-    "context-manager": {
-      "command": "context-manager",
-      "env": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      }
-    }
-  }
-}
-```
-
-> After any change, **quit Windsurf completely and reopen it** — a window reload is not enough.
-
 ---
 
 ### Opencode
@@ -393,39 +245,6 @@ Opencode uses **JSON** under the `mcp` key. Like Kilo Code, `command` is an **ar
     "context-manager": {
       "type": "local",
       "command": ["context-manager"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**With a pre-loaded graph (argument appended to the `command` array):**
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager", "--graph", "/abs/path/to/.context-manager/graph.json"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Or via environment variable:**
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "context-manager": {
-      "type": "local",
-      "command": ["context-manager"],
-      "environment": {
-        "CONTEXT_MANAGER_GRAPH_PATH": "/abs/path/to/.context-manager/graph.json"
-      },
       "enabled": true
     }
   }
@@ -464,5 +283,6 @@ inspection and graph tools so the agent navigates before it reads.
 | `command not found` / server won't start | `~/.dotnet/tools` not on `PATH`. Add it, or use the absolute path to the executable (see the [PATH note](#️-windows--path-note-read-before-configuring-any-client)). |
 | Tools don't appear after editing config | Client wasn't fully restarted. Quit completely and reopen. |
 | `project_scan` throws on a `net48` solution | Missing MSBuild / Framework 4.8 targeting pack. Install VS Build Tools with **.NET desktop build tools** (Windows only). |
+| `project_scan` on a `net48` solution fails with `TypeInitializationException` in `Microsoft.Build.Shared.XMakeElements` | The newest installed Visual Studio ships an MSBuild that the installed ContextManager's Roslyn build host does not support. Run `dotnet tool update -g ContextManager`. |
 | Wrong config wins (Cursor/Kilo/Codex) | Project-scoped config overrides global. Check for a local `.cursor/mcp.json`, `kilo.jsonc`, or `.codex/config.toml`. |
 | JSON parse error | Trailing comma or comment in a strict-JSON file. Only `kilo.jsonc` / `opencode.jsonc` allow comments. |

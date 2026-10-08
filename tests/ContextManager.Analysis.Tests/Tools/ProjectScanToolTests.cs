@@ -14,10 +14,7 @@ public class ProjectScanToolTests
 {
     private static ProjectScanTool CreateTool()
     {
-        var store = new GraphStore();
-        var edgeExtractor = new EdgeExtractor();
-        var builder = new GraphBuilder(store, edgeExtractor);
-        return new ProjectScanTool(builder, store);
+        return new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), new GraphRegistry());
     }
 
     [TestMethod]
@@ -50,12 +47,11 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_ValidSolution_ReturnsSummaryAndWritesGraphJson()
     {
-        var store = new GraphStore();
         var solutionPath = FindRepoSolutionPath();
         var graphJsonPath = Path.Combine(Path.GetTempPath(), $"context-manager-{Guid.NewGuid():N}.json");
         var tool = new ProjectScanTool(
-            new GraphBuilder(store, new EdgeExtractor()),
-            store,
+            new GraphBuilder(new EdgeExtractor()),
+            new GraphRegistry(),
             (path, json, token) => path.EndsWith("graph.json")
                 ? File.WriteAllTextAsync(graphJsonPath, json, token)
                 : Task.CompletedTask);
@@ -106,13 +102,15 @@ public class ProjectScanToolTests
     [TestMethod]
     public async Task ProjectScanAsync_PreCancelled_PreservesPublishedGraph()
     {
-        var store = new GraphStore();
+        var solutionPath = FindRepoSolutionPath();
+        var registry = new GraphRegistry();
+        var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = new ProjectScanTool(new GraphBuilder(store, new EdgeExtractor()), store);
+        var tool = new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), registry);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var json = await tool.ProjectScanAsync(FindRepoSolutionPath(), cts.Token);
+        var json = await tool.ProjectScanAsync(solutionPath, cts.Token);
 
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_cancelled", error?.Code);
@@ -123,12 +121,13 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_PersistenceFailure_PreservesPublishedGraph()
     {
-        var store = new GraphStore();
+        var solutionPath = FindRepoSolutionPath();
+        var registry = new GraphRegistry();
+        var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
-        var builder = new GraphBuilder(store, new EdgeExtractor());
-        var tool = new ProjectScanTool(builder, store, (_, _, _) => throw new IOException("controlled write failure"));
+        var tool = new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), registry, (_, _, _) => throw new IOException("controlled write failure"));
 
-        var json = await tool.ProjectScanAsync(FindRepoSolutionPath());
+        var json = await tool.ProjectScanAsync(solutionPath);
 
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_failed", error?.Code);
@@ -140,11 +139,10 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_MixedLegacyAndMissingTargets_ReportsPartialCoverage()
     {
-        var store = new GraphStore();
         var writes = new Dictionary<string, string>();
         var tool = new ProjectScanTool(
-            new GraphBuilder(store, new EdgeExtractor()),
-            store,
+            new GraphBuilder(new EdgeExtractor()),
+            new GraphRegistry(),
             (path, content, _) =>
             {
                 writes[path] = content;
@@ -166,10 +164,9 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_DiagnosticsLogWriteFailure_KeepsScanResult()
     {
-        var store = new GraphStore();
         var tool = new ProjectScanTool(
-            new GraphBuilder(store, new EdgeExtractor()),
-            store,
+            new GraphBuilder(new EdgeExtractor()),
+            new GraphRegistry(),
             (path, _, _) => path.EndsWith("scan-diagnostics.log")
                 ? throw new IOException("log write failure")
                 : Task.CompletedTask);
@@ -185,18 +182,19 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_EmptyScope_ReturnsDedicatedErrorAndPreservesSnapshot()
     {
-        var store = new GraphStore();
+        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Empty.sln");
+        var registry = new GraphRegistry();
+        var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
         var writes = new Dictionary<string, string>();
         var tool = new ProjectScanTool(
-            new GraphBuilder(store, new EdgeExtractor()),
-            store,
+            new GraphBuilder(new EdgeExtractor()),
+            registry,
             (path, content, _) =>
             {
                 writes[path] = content;
                 return Task.CompletedTask;
             });
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Empty.sln");
 
         var json = await tool.ProjectScanAsync(solutionPath);
 
@@ -211,12 +209,14 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_CancelledDuringDiagnosticsLogWrite_KeepsNewGraphAndReportsLogFailure()
     {
-        var store = new GraphStore();
+        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+        var registry = new GraphRegistry();
+        var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
         using var cts = new CancellationTokenSource();
         var tool = new ProjectScanTool(
-            new GraphBuilder(store, new EdgeExtractor()),
-            store,
+            new GraphBuilder(new EdgeExtractor()),
+            registry,
             (path, _, token) =>
             {
                 if (!path.EndsWith("scan-diagnostics.log"))
@@ -224,7 +224,6 @@ public class ProjectScanToolTests
                 cts.Cancel();
                 throw new OperationCanceledException(token);
             });
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
 
         var result = await tool.ProjectScanAsync(solutionPath, cts.Token);
 
