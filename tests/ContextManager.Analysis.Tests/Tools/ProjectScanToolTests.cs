@@ -56,7 +56,9 @@ public class ProjectScanToolTests
         var tool = new ProjectScanTool(
             new GraphBuilder(store, new EdgeExtractor()),
             store,
-            (_, json, token) => File.WriteAllTextAsync(graphJsonPath, json, token));
+            (path, json, token) => path.EndsWith("graph.json")
+                ? File.WriteAllTextAsync(graphJsonPath, json, token)
+                : Task.CompletedTask);
 
         var result = await tool.ProjectScanAsync(solutionPath);
 
@@ -139,14 +141,44 @@ public class ProjectScanToolTests
     public async Task ProjectScanAsync_MixedLegacyAndMissingTargets_ReportsPartialCoverage()
     {
         var store = new GraphStore();
-        var tool = new ProjectScanTool(new GraphBuilder(store, new EdgeExtractor()), store, (_, _, _) => Task.CompletedTask);
+        var writes = new Dictionary<string, string>();
+        var tool = new ProjectScanTool(
+            new GraphBuilder(store, new EdgeExtractor()),
+            store,
+            (path, content, _) =>
+            {
+                writes[path] = content;
+                return Task.CompletedTask;
+            });
         var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
 
         var result = await tool.ProjectScanAsync(solutionPath);
 
         StringAssert.StartsWith(result, "Scan partial.");
         StringAssert.Contains(result, "unsupported projects");
-        StringAssert.Contains(result, "Diagnostics:");
+        StringAssert.Contains(result, "Diagnostics (");
+        StringAssert.Contains(result, "scan-diagnostics.log");
+        var log = writes.Single(w => w.Key.EndsWith("scan-diagnostics.log"));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(log.Value));
+    }
+
+    [TestMethod]
+    [Timeout(120_000)]
+    public async Task ProjectScanAsync_DiagnosticsLogWriteFailure_KeepsScanResult()
+    {
+        var store = new GraphStore();
+        var tool = new ProjectScanTool(
+            new GraphBuilder(store, new EdgeExtractor()),
+            store,
+            (path, _, _) => path.EndsWith("scan-diagnostics.log")
+                ? throw new IOException("log write failure")
+                : Task.CompletedTask);
+        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+
+        var result = await tool.ProjectScanAsync(solutionPath);
+
+        StringAssert.StartsWith(result, "Scan partial.");
+        StringAssert.Contains(result, "Diagnostics log not written: log write failure");
     }
 
     [TestMethod]
@@ -195,5 +227,43 @@ public class ProjectScanToolTests
         Assert.AreEqual("new", await File.ReadAllTextAsync(target));
         Assert.AreEqual(1, Directory.GetFiles(directory).Length);
         Directory.Delete(directory, true);
+    }
+
+    [TestMethod]
+    public void FormatDiagnostics_GroupsOrdersTruncatesAndBounds()
+    {
+        var method = typeof(ProjectScanTool).GetMethod("FormatDiagnostics", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.IsNotNull(method);
+        const string logPath = "/repo/.context-manager/scan-diagnostics.log";
+        string Format(IReadOnlyList<GraphBuildDiagnostic> diagnostics) =>
+            (string)method.Invoke(null, [diagnostics, logPath])!;
+
+        var grouped = Format(
+        [
+            new GraphBuildDiagnostic("Warning", "A"),
+            new GraphBuildDiagnostic("Warning", "B"),
+            new GraphBuildDiagnostic("Warning", "A"),
+            new GraphBuildDiagnostic("Warning", "B"),
+            new GraphBuildDiagnostic("Warning", "C"),
+            new GraphBuildDiagnostic("Warning", "C"),
+            new GraphBuildDiagnostic("Warning", "C"),
+            new GraphBuildDiagnostic("Failure", "F"),
+        ]);
+        Assert.AreEqual(
+            $" Diagnostics (4 groups, 8 total): Failure (x1): F | Warning (x3): C | Warning (x2): A | Warning (x2): B | full log: {logPath}",
+            grouped);
+
+        var many = Format(Enumerable.Range(0, 12).Select(i => new GraphBuildDiagnostic("Warning", $"M{i}")).ToList());
+        var entries = many.Split(" | ");
+        Assert.AreEqual(11, entries.Length);
+        Assert.AreEqual($"+2 more groups, see {logPath}", entries[^1]);
+        StringAssert.Contains(entries[9], "Warning (x1): M9");
+
+        var truncated = Format([new GraphBuildDiagnostic("Failure", new string('x', 500))]);
+        var message = truncated.Split("Failure (x1): ")[1].Split(" | ")[0];
+        Assert.AreEqual(300, message.Length);
+        Assert.IsTrue(message.EndsWith('…'));
+
+        Assert.AreEqual(string.Empty, Format([]));
     }
 }

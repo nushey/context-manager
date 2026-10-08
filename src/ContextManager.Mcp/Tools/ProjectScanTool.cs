@@ -10,8 +10,11 @@ namespace ContextManager.Mcp.Tools;
 [McpServerToolType]
 public sealed class ProjectScanTool
 {
+    private const int MaxInlineDiagnosticGroups = 10;
+    private const int MaxInlineDiagnosticLength = 300;
+
     private readonly GraphBuilder _builder;
-    private readonly Func<string, string, CancellationToken, Task> _writeGraph;
+    private readonly Func<string, string, CancellationToken, Task> _writeFile;
 
     public ProjectScanTool(GraphBuilder builder, GraphStore store)
         : this(builder, store, WriteAtomicallyAsync)
@@ -21,15 +24,17 @@ public sealed class ProjectScanTool
     public ProjectScanTool(
         GraphBuilder builder,
         GraphStore store,
-        Func<string, string, CancellationToken, Task> writeGraph)
+        Func<string, string, CancellationToken, Task> writeFile)
     {
         _builder = builder;
-        _writeGraph = writeGraph;
+        _writeFile = writeFile;
     }
 
     [McpServerTool(Name = "project_scan"), Description(
         "Scan a .NET solution and build a knowledge graph from loaded C# source documents. " +
-        "The result reports project/document coverage, unsupported languages, skipped documents, and workspace diagnostics. " +
+        "The result reports project/document coverage, unsupported languages, skipped documents, and a bounded summary of workspace diagnostics: " +
+        "identical diagnostics are grouped with their counts, failures first, at most 10 groups inline with long messages truncated. " +
+        "The full raw diagnostic list is written to .context-manager/scan-diagnostics.log next to graph.json on every scan. " +
         "Persistence and in-memory publication succeed together; failed, empty, or cancelled scans preserve the previous graph.")]
     public async Task<string> ProjectScanAsync(
         [Description("Absolute path to a .sln file to scan.")] string solutionPath,
@@ -66,24 +71,37 @@ public sealed class ProjectScanTool
             var dir = Path.GetDirectoryName(solutionPath) ?? string.Empty;
             var outputDir = Path.Combine(dir, ".context-manager");
             var graphJsonPath = Path.Combine(outputDir, "graph.json");
+            var diagnosticsLogPath = Path.Combine(outputDir, "scan-diagnostics.log");
             phase = "solution_evaluation_and_extraction";
             var result = await _builder.BuildWithReportAsync(
                 solutionPath,
                 (json, token) =>
                 {
                     phase = "persistence";
-                    return _writeGraph(graphJsonPath, json, token);
+                    return _writeFile(graphJsonPath, json, token);
                 },
                 ct);
+
+            var logFailureText = string.Empty;
+            try
+            {
+                await _writeFile(
+                    diagnosticsLogPath,
+                    string.Join(Environment.NewLine, result.Diagnostics.Select(d => $"{d.Kind}: {d.Message}")),
+                    ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"project_scan phase=diagnostics_log failed: {ex}");
+                logFailureText = $" Diagnostics log not written: {ex.Message}";
+            }
 
             var coverage = $"{result.LoadedProjects}/{result.TotalProjects} projects, " +
                            $"{result.LoadedDocuments}/{result.TotalDocuments} documents, " +
                            $"{result.UnsupportedProjects} unsupported projects, " +
                            $"{result.SkippedProjects} skipped projects, " +
                            $"{result.SkippedDocuments} skipped documents";
-            var diagnosticText = result.Diagnostics.Count == 0
-                ? string.Empty
-                : $" Diagnostics: {string.Join(" | ", result.Diagnostics.Select(d => $"{d.Kind}: {d.Message}"))}";
+            var diagnosticText = FormatDiagnostics(result.Diagnostics, diagnosticsLogPath) + logFailureText;
 
             if (result.Status is "failed" or "empty")
             {
@@ -134,6 +152,33 @@ public sealed class ProjectScanTool
                 File.Delete(temporaryPath);
         }
     }
+
+    private static string FormatDiagnostics(IReadOnlyList<GraphBuildDiagnostic> diagnostics, string logPath)
+    {
+        if (diagnostics.Count == 0)
+            return string.Empty;
+
+        var groups = diagnostics
+            .GroupBy(d => (d.Kind, d.Message))
+            .OrderByDescending(g => g.Key.Kind == "Failure")
+            .ThenByDescending(g => g.Count())
+            .ToList();
+
+        var entries = groups
+            .Take(MaxInlineDiagnosticGroups)
+            .Select(g => $"{g.Key.Kind} (x{g.Count()}): {Truncate(g.Key.Message)}")
+            .ToList();
+
+        var omitted = groups.Count - entries.Count;
+        entries.Add(omitted > 0 ? $"+{omitted} more groups, see {logPath}" : $"full log: {logPath}");
+
+        return $" Diagnostics ({groups.Count} groups, {diagnostics.Count} total): {string.Join(" | ", entries)}";
+    }
+
+    private static string Truncate(string message) =>
+        message.Length <= MaxInlineDiagnosticLength
+            ? message
+            : $"{message[..(MaxInlineDiagnosticLength - 1)]}…";
 
     private static string FormatExceptionChain(Exception ex)
     {
