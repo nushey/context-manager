@@ -1,0 +1,2 @@
+[mcp_servers.context-manager.env]
+DOTNET_ROOT = "/usr/share/dotnet"

@@ -2,6 +2,7 @@ using ContextManager.Analysis;
 using ContextManager.Analysis.Extraction;
 using ContextManager.Analysis.Graph;
 using ContextManager.Mcp;
+using ContextManager.Mcp.Setup;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -18,6 +19,18 @@ if (args.Contains("--diagnose-msbuild", StringComparer.OrdinalIgnoreCase))
         Console.Error.WriteLine(ex);
         Environment.ExitCode = 1;
     }
+
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCase))
+{
+    var yes = args.Skip(1).Any(arg => arg is "-y" or "--yes");
+    Environment.ExitCode = new SetupCommand(
+        SetupEnvironment.FromCurrentProcess(),
+        Spectre.Console.AnsiConsole.Console,
+        new JsonConfigInserter(),
+        new TomlConfigAppender()).Run(yes);
 
     return;
 }
