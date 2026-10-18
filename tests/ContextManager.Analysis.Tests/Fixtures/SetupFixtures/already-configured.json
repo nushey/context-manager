@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "context-manager": {
+      "command": "/custom/path/context-manager"
+    }
+  }
+}
