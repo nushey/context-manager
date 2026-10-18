@@ -1,0 +1,12 @@
+{
+  "numStartups": 12,
+  "projects": {
+    "/home/user/repo": {
+      "mcpServers": {
+        "context-manager": {
+          "command": "context-manager"
+        }
+      }
+    }
+  }
+}

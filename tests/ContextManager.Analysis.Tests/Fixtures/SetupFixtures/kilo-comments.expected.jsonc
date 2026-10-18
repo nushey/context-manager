@@ -1,0 +1,13 @@
+// Kilo global config
+{
+  /* theme settings */
+  "theme": "dark",
+  "mcp": { "context-manager": { "type": "local", "command": ["context-manager"], "enabled": true },
+    // existing servers
+    "other-server": {
+      "type": "local",
+      "command": ["other"],
+      "enabled": true,
+    },
+  },
+}

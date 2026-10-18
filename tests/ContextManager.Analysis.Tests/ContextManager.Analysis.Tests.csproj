@@ -25,6 +25,7 @@
 
     <ItemGroup>
         <None Include="Fixtures\**\*.cs" CopyToOutputDirectory="PreserveNewest" />
+        <None Update="Fixtures\SetupFixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
         <Compile Remove="Fixtures\**" />
     </ItemGroup>
 

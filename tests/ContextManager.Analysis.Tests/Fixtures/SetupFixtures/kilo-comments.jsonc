@@ -1,0 +1,13 @@
+// Kilo global config
+{
+  /* theme settings */
+  "theme": "dark",
+  "mcp": {
+    // existing servers
+    "other-server": {
+      "type": "local",
+      "command": ["other"],
+      "enabled": true,
+    },
+  },
+}

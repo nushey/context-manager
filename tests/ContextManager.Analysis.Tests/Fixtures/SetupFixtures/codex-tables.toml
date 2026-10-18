@@ -1,0 +1,8 @@
+model = "o4-mini"
+
+[mcp_servers.other-server]
+command = "other"
+args = ["--flag"]
+
+[profiles.default]
+approval_policy = "never"
