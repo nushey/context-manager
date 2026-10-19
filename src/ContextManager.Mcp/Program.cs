@@ -1,3 +1,4 @@
+using System.Reflection;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Extraction;
 using ContextManager.Analysis.Graph;
@@ -6,6 +7,16 @@ using ContextManager.Mcp.Setup;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
+if (args.Length == 1 && (args[0].Equals("--version", StringComparison.OrdinalIgnoreCase)
+    || args[0].Equals("-v", StringComparison.OrdinalIgnoreCase)))
+{
+    var version = typeof(Program).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+        .InformationalVersion;
+    Console.WriteLine(version.Split('+')[0]);
+    return;
+}
 
 if (args.Contains("--diagnose-msbuild", StringComparer.OrdinalIgnoreCase))
 {
