@@ -100,7 +100,7 @@ public sealed class GraphEnricher : IGraphEnricher
             node.Id,
             inbound.Count,
             outbound.Count,
-            Endpoints(inbound),
+            Endpoints(inbound.Where(n => n.EdgeKinds.Keys.Any(kind => kind != "IMPLEMENTS")).ToList()),
             Endpoints(outbound));
     }
 

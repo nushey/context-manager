@@ -55,11 +55,11 @@ public class ProjectScanToolTests : FixtureTest
 
         var result = await CreateTool().ProjectScanAsync(solutionPath);
 
-        StringAssert.StartsWith(result, "Scan partial. 12 nodes, 13 edges. Coverage:");
+        StringAssert.StartsWith(result, "Scan partial. 16 nodes, 19 edges. Coverage:");
         var persisted = new GraphStore();
         persisted.Deserialize(await File.ReadAllTextAsync(GraphRegistry.GetGraphPath(solutionPath)));
-        Assert.AreEqual(12, persisted.NodeCount);
-        Assert.AreEqual(13, persisted.EdgeCount);
+        Assert.AreEqual(16, persisted.NodeCount);
+        Assert.AreEqual(19, persisted.EdgeCount);
         Assert.IsTrue(persisted.TryGetNode("IncrementalFixtures.Consumer.Client", out _));
     }
 
@@ -199,14 +199,14 @@ public class ProjectScanToolTests : FixtureTest
         var registry = new GraphRegistry();
         var tool = CreateTool(registry);
 
-        StringAssert.StartsWith(await tool.ProjectScanAsync(solutionPath), "Scan partial. 12 nodes, 13 edges.");
+        StringAssert.StartsWith(await tool.ProjectScanAsync(solutionPath), "Scan partial. 16 nodes, 19 edges.");
         var firstRevision = registry.TryLoad(solutionPath)!.Revision;
         var sender = Path.Combine(directory, "Core", "Sender.cs");
         FixtureCopy.Edit(sender, "        Audit.Record();\n", "");
 
         var second = await tool.ProjectScanAsync(solutionPath);
 
-        StringAssert.StartsWith(second, "Scan partial. 12 nodes, 12 edges.");
+        StringAssert.StartsWith(second, "Scan partial. 16 nodes, 18 edges.");
         var graph = registry.TryLoad(solutionPath)!;
         Assert.AreNotEqual(firstRevision, graph.Revision);
         Assert.IsTrue(graph.HasProvenance);

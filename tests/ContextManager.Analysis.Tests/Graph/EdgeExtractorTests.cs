@@ -197,7 +197,7 @@ public class EdgeExtractorTests
         var edges = extractor.Extract(model, root);
 
         var methodContainsEdge = edges.FirstOrDefault(e =>
-            e.Type == "CONTAINS" && e.Target.Kind == "Method");
+            e.Type == "CONTAINS" && e.Target.Kind == "Method" && e.Target.Id.Contains("GetGreeting"));
 
         Assert.IsNotNull(methodContainsEdge, "Expected at least one CONTAINS edge to a Method node");
         // The ID must match IMethodSymbol.ToDisplayString() — same form GraphBuilder uses for method nodes.
@@ -555,5 +555,99 @@ public class EdgeExtractorTests
         var references = store.GetAggregatedNeighbors("PartialGraphFixtures.Consumer")
             .Single(n => n.Id == "PartialGraphFixtures.Dependency" && n.Direction == "out");
         Assert.AreEqual(1, references.EdgeKinds["REFERENCES"]);
+    }
+
+    private static readonly string EdgeCoverageCasesPath = FixturePath("EdgeCoverageCases.cs");
+    private static readonly string TopLevelProgramPath = FixturePath("TopLevelProgram.cs");
+
+    private static IReadOnlyList<GraphEdge> ExtractWithFramework(string primaryPath, params string[] otherPaths)
+    {
+        var trees = new[] { primaryPath }.Concat(otherPaths)
+            .Select(p => CSharpSyntaxTree.ParseText(File.ReadAllText(p), path: p))
+            .ToList();
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator)
+            .Select(p => MetadataReference.CreateFromFile(p));
+        var compilation = CSharpCompilation.Create("EdgeCoverageTest", trees, references);
+
+        return new EdgeExtractor().Extract(compilation.GetSemanticModel(trees[0]), (CompilationUnitSyntax)trees[0].GetRoot());
+    }
+
+    private static bool HasEdge(IReadOnlyList<GraphEdge> edges, string source, string type, string target) =>
+        edges.Any(e => e.Source.Id == source && e.Type == type && e.Target.Id == target);
+
+    private static string Describe(IReadOnlyList<GraphEdge> edges) =>
+        string.Join(Environment.NewLine, edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"));
+
+    [TestMethod]
+    public void Extract_PropertyAccess_EmitsReferencesToPropertyNode()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.StrategyHost.ActiveName()", "REFERENCES", "EdgeCoverageFixtures.IStrategy.Name"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Catalog.ToResponse(EdgeCoverageFixtures.Product)", "REFERENCES", "EdgeCoverageFixtures.Product.Price"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Catalog.Find()", "REFERENCES", "EdgeCoverageFixtures.Product.Price"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_ObjectCreation_EmitsCallsToConstructorIncludingFieldInitializers()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.StrategyHost", "CALLS", "EdgeCoverageFixtures.StandardStrategy.StandardStrategy()"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Catalog.Find()", "CALLS", "EdgeCoverageFixtures.Product.Product()"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Catalog.ToResponse(EdgeCoverageFixtures.Product)", "CALLS", "EdgeCoverageFixtures.ProductResponse.ProductResponse(int, decimal)"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.StandardStrategy", "CONTAINS", "EdgeCoverageFixtures.StandardStrategy.StandardStrategy()"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_ExternalGenericInvocation_EmitsReferencesToTypeArguments()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Registrations.Register()", "REFERENCES", "EdgeCoverageFixtures.Catalog"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_MethodGroup_EmitsCalls()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges,
+            "EdgeCoverageFixtures.Catalog.GetAll(System.Collections.Generic.IEnumerable<EdgeCoverageFixtures.Product>)",
+            "CALLS",
+            "EdgeCoverageFixtures.Catalog.ToResponse(EdgeCoverageFixtures.Product)"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_GenericReturnType_EmitsReturnsToTypeArgument()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges,
+            "EdgeCoverageFixtures.Catalog.GetAll(System.Collections.Generic.IEnumerable<EdgeCoverageFixtures.Product>)",
+            "RETURNS",
+            "EdgeCoverageFixtures.ProductResponse"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.Catalog.Find()", "RETURNS", "EdgeCoverageFixtures.Product"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_PositionalRecord_EmitsPropertyContainsAndNoInjects()
+    {
+        var edges = ExtractWithFramework(EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.ProductResponse", "CONTAINS", "EdgeCoverageFixtures.ProductResponse.Id"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "EdgeCoverageFixtures.ProductResponse", "CONTAINS", "EdgeCoverageFixtures.ProductResponse.Price"), Describe(edges));
+        Assert.IsFalse(edges.Any(e => e.Source.Id == "EdgeCoverageFixtures.ProductResponse" && e.Type == "INJECTS"), Describe(edges));
+    }
+
+    [TestMethod]
+    public void Extract_TopLevelStatements_EmitEdgesFromSynthesizedEntryPoint()
+    {
+        var edges = ExtractWithFramework(TopLevelProgramPath, EdgeCoverageCasesPath);
+
+        Assert.IsTrue(HasEdge(edges, "Program", "CONTAINS", "Program.<Main>$(string[])"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "Program.<Main>$(string[])", "CALLS", "EdgeCoverageFixtures.Catalog.Catalog()"), Describe(edges));
+        Assert.IsTrue(HasEdge(edges, "Program.<Main>$(string[])", "CALLS", "EdgeCoverageFixtures.Catalog.Find()"), Describe(edges));
     }
 }

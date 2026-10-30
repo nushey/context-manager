@@ -291,6 +291,27 @@ public static class MemberExtractor
     {
         var result = new List<Models.PropertyInfo>();
 
+        if (node is RecordDeclarationSyntax { ParameterList: { } positionalParameters } record)
+        {
+            var declaredNames = node.Members.OfType<PropertyDeclarationSyntax>()
+                .Select(p => p.Identifier.ValueText)
+                .ToHashSet(StringComparer.Ordinal);
+            var isMutableStruct = record.ClassOrStructKeyword.ValueText == "struct"
+                && !record.Modifiers.Any(m => m.ValueText == "readonly");
+
+            foreach (var parameter in positionalParameters.Parameters)
+            {
+                if (parameter.Type is null || declaredNames.Contains(parameter.Identifier.ValueText))
+                    continue;
+
+                result.Add(new Models.PropertyInfo(
+                    Name: parameter.Identifier.ValueText,
+                    Type: parameter.Type.ToString(),
+                    Access: "public",
+                    Accessors: isMutableStruct ? "get; set;" : "get; init;"));
+            }
+        }
+
         foreach (var prop in node.Members.OfType<PropertyDeclarationSyntax>())
         {
             var explicitSpecifier = prop.ExplicitInterfaceSpecifier;

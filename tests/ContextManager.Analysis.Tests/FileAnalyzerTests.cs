@@ -227,20 +227,19 @@ public class FileAnalyzerTests
     }
 
     [TestMethod]
-    public async Task Analyze_CreateOrderRecord_PrimaryConstructorInConstructorDependencies()
+    public async Task Analyze_CreateOrderRecord_PositionalParametersAreProperties()
     {
         var result = await _analyzer.AnalyzeAsync(FixturePath("CreateOrderRecord.cs"), CancellationToken.None);
 
         Assert.IsNotNull(result.Analysis);
         var analysis = result.Analysis!;
         var type = analysis.Types.First(t => t.Name == "CreateOrderRecord");
-        Assert.AreEqual(3, type.ConstructorDependencies.Count);
-        Assert.AreEqual("string", type.ConstructorDependencies[0].Type);
-        Assert.AreEqual("CustomerId", type.ConstructorDependencies[0].Name);
-        Assert.AreEqual("decimal", type.ConstructorDependencies[1].Type);
-        Assert.AreEqual("Total", type.ConstructorDependencies[1].Name);
-        Assert.AreEqual("string", type.ConstructorDependencies[2].Type);
-        Assert.AreEqual("ShippingAddress", type.ConstructorDependencies[2].Name);
+        Assert.IsNull(type.ConstructorDependencies);
+        Assert.IsNotNull(type.Properties);
+        CollectionAssert.AreEqual(
+            new[] { "CustomerId:string", "Total:decimal", "ShippingAddress:string" },
+            type.Properties.Select(p => $"{p.Name}:{p.Type}").ToArray());
+        Assert.IsTrue(type.Properties.All(p => p.Access == "public" && p.Accessors == "get; init;"));
     }
 
     [TestMethod]

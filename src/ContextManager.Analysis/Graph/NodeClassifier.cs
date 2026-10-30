@@ -36,7 +36,9 @@ internal static class NodeClassifier
 
     private static string? DeclaringFile(ISymbol symbol, string? fallbackFilePath)
     {
-        var path = symbol.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
+        var reference = symbol.DeclaringSyntaxReferences.FirstOrDefault()
+            ?? symbol.ContainingType?.DeclaringSyntaxReferences.FirstOrDefault();
+        var path = reference?.SyntaxTree.FilePath;
         if (string.IsNullOrEmpty(path))
             path = fallbackFilePath;
 

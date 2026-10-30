@@ -55,6 +55,21 @@ public class EdgeExtractor
                 }
             }
 
+            foreach (var constructor in typeSymbol.InstanceConstructors)
+            {
+                var constructorNode = NodeClassifier.NodeFor(constructor);
+                if (constructorNode is not null)
+                    AddEdge(sourceNode, constructorNode, "CONTAINS", seen, edges);
+            }
+
+            foreach (var (positionalProperty, parameterType) in PositionalProperties(model, typeDecl, typeSymbol, ct))
+            {
+                var propertyNode = NodeClassifier.NodeFor(positionalProperty);
+                if (propertyNode is not null)
+                    AddEdge(sourceNode, propertyNode, "CONTAINS", seen, edges);
+                EmitReferencesForType(model.GetTypeInfo(parameterType, ct).Type, sourceNode, seen, edges);
+            }
+
             // CONTAINS edges — type → each declared method and property
             foreach (var memberDecl in typeDecl.Members)
             {
@@ -136,22 +151,14 @@ public class EdgeExtractor
                     model.GetTypeInfo(methodDecl.ReturnType, ct).Type,
                     methodNode, "RETURNS", seen, edges);
 
-                // CALLS edges: invocations within the method body
-                if (methodDecl.Body is not null || methodDecl.ExpressionBody is not null)
-                {
-                    SyntaxNode? bodyNode = methodDecl.Body ?? (SyntaxNode?)methodDecl.ExpressionBody;
-                    if (bodyNode is not null)
-                    {
-                        foreach (var invocation in bodyNode.DescendantNodes().OfType<InvocationExpressionSyntax>())
-                        {
-                            var invokedSymbol = model.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
-                            if (invokedSymbol is null || !IsSourceSymbol(invokedSymbol))
-                                continue;
+                EmitCallsFromBody(model, methodDecl.Body ?? (SyntaxNode?)methodDecl.ExpressionBody,
+                    methodNode, seen, edges, ct);
+            }
 
-                            EmitCall(invokedSymbol, methodNode, seen, edges);
-                        }
-                    }
-                }
+            foreach (var field in typeDecl.Members.OfType<FieldDeclarationSyntax>())
+            {
+                foreach (var variable in field.Declaration.Variables)
+                    EmitCallsFromBody(model, variable.Initializer, sourceNode, seen, edges, ct);
             }
 
             foreach (var constructor in typeDecl.Members.OfType<ConstructorDeclarationSyntax>())
@@ -166,6 +173,7 @@ public class EdgeExtractor
                     continue;
 
                 EmitCallsFromBody(model, property.ExpressionBody, propertyNode, seen, edges, ct);
+                EmitCallsFromBody(model, property.Initializer, propertyNode, seen, edges, ct);
                 if (property.AccessorList is null)
                     continue;
 
@@ -175,7 +183,64 @@ public class EdgeExtractor
             }
         }
 
+        EmitTopLevelStatements(model, root, seen, edges, ct);
+
         return edges;
+    }
+
+    internal static IEnumerable<(IPropertySymbol Property, TypeSyntax Type)> PositionalProperties(
+        SemanticModel model,
+        TypeDeclarationSyntax typeDecl,
+        INamedTypeSymbol typeSymbol,
+        CancellationToken ct)
+    {
+        if (typeDecl is not RecordDeclarationSyntax { ParameterList: { } parameterList })
+            yield break;
+
+        foreach (var parameter in parameterList.Parameters)
+        {
+            if (parameter.Type is null || model.GetDeclaredSymbol(parameter, ct) is not { } parameterSymbol)
+                continue;
+
+            var property = typeSymbol.GetMembers(parameterSymbol.Name)
+                .OfType<IPropertySymbol>()
+                .FirstOrDefault(p => p.DeclaringSyntaxReferences.Any(r => r.GetSyntax(ct) == parameter));
+            if (property is not null)
+                yield return (property, parameter.Type);
+        }
+    }
+
+    internal static (GraphNode Program, GraphNode EntryPoint)? TopLevelNodes(
+        SemanticModel model,
+        CompilationUnitSyntax root,
+        CancellationToken ct)
+    {
+        if (!root.Members.OfType<GlobalStatementSyntax>().Any()
+            || model.GetDeclaredSymbol(root, ct) is not IMethodSymbol entryPoint)
+            return null;
+
+        var filePath = root.SyntaxTree.FilePath;
+        if (NodeClassifier.NodeFor(entryPoint.ContainingType, filePath) is not { } programNode)
+            return null;
+
+        var parameters = string.Join(", ", entryPoint.Parameters.Select(p => p.Type.ToDisplayString()));
+        var entryPointNode = new GraphNode($"{programNode.Id}.{entryPoint.MetadataName}({parameters})", "Method", programNode.File);
+        return (programNode, entryPointNode);
+    }
+
+    private static void EmitTopLevelStatements(
+        SemanticModel model,
+        CompilationUnitSyntax root,
+        HashSet<(string, string, string)> seen,
+        List<GraphEdge> edges,
+        CancellationToken ct)
+    {
+        if (TopLevelNodes(model, root, ct) is not var (programNode, entryPointNode))
+            return;
+
+        AddEdge(programNode, entryPointNode, "CONTAINS", seen, edges);
+        foreach (var statement in root.Members.OfType<GlobalStatementSyntax>())
+            EmitCallsFromBody(model, statement, entryPointNode, seen, edges, ct);
     }
 
     private static bool IsSourceSymbol(ISymbol symbol)
@@ -189,6 +254,9 @@ public class EdgeExtractor
         var canonical = NodeClassifier.Canonicalize(symbol);
         if (!canonical.DeclaringSyntaxReferences.IsEmpty)
             return true;
+
+        if (canonical is IMethodSymbol { MethodKind: MethodKind.Constructor, ContainingType: { } constructedType })
+            return IsSourceSymbol(constructedType);
 
         // Constructed generics (e.g. IRepository<Attraction>) have empty DeclaringSyntaxReferences —
         // the declaration lives on the open generic (OriginalDefinition), not the instantiation.
@@ -247,7 +315,12 @@ public class EdgeExtractor
             }
 
             foreach (var typeArg in named.TypeArguments)
-                EmitReferencesForType(typeArg, sourceNode, seen, edges);
+            {
+                if (edgeType == "RETURNS")
+                    EmitGenericAwareEdge(typeArg, sourceNode, edgeType, seen, edges);
+                else
+                    EmitReferencesForType(typeArg, sourceNode, seen, edges);
+            }
         }
         else if (IsSourceSymbol(typeSymbol))
         {
@@ -310,11 +383,27 @@ public class EdgeExtractor
         if (body is null)
             return;
 
-        foreach (var invocation in body.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+        foreach (var node in body.DescendantNodesAndSelf())
         {
-            var invokedSymbol = model.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
-            if (invokedSymbol is not null && IsSourceSymbol(invokedSymbol))
-                EmitCall(invokedSymbol, sourceNode, seen, edges);
+            switch (node)
+            {
+                case InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax:
+                    if (model.GetSymbolInfo(node, ct).Symbol is IMethodSymbol invokedSymbol)
+                        EmitCall(invokedSymbol, sourceNode, seen, edges);
+                    break;
+                case SimpleNameSyntax name:
+                    switch (model.GetSymbolInfo(name, ct).Symbol)
+                    {
+                        case IMethodSymbol referencedMethod:
+                            EmitCall(referencedMethod, sourceNode, seen, edges);
+                            break;
+                        case IPropertySymbol property when IsSourceSymbol(property):
+                            if (NodeClassifier.NodeFor(property) is { } propertyNode)
+                                AddEdge(sourceNode, propertyNode, "REFERENCES", seen, edges);
+                            break;
+                    }
+                    break;
+            }
         }
     }
 
@@ -324,7 +413,9 @@ public class EdgeExtractor
         HashSet<(string, string, string)> seen,
         List<GraphEdge> edges)
     {
-        var invokedNode = invokedSymbol.MethodKind == MethodKind.LocalFunction ? null : NodeClassifier.NodeFor(invokedSymbol);
+        var invokedNode = invokedSymbol.MethodKind == MethodKind.LocalFunction || !IsSourceSymbol(invokedSymbol)
+            ? null
+            : NodeClassifier.NodeFor(invokedSymbol);
         if (invokedNode is not null)
             AddEdge(sourceNode, invokedNode, "CALLS", seen, edges);
 

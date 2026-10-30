@@ -354,7 +354,7 @@ public class MemberExtractorTests
     }
 
     [TestMethod]
-    public void Record_PrimaryConstructorPopulatesConstructorDependencies()
+    public void Record_PositionalParametersArePropertiesNotConstructorDependencies()
     {
         var snippet = """
             record CreateOrderRecord(string CustomerId, decimal Total)
@@ -365,11 +365,11 @@ public class MemberExtractorTests
         var node = ParseFirstType(snippet);
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(2, result.ConstructorDependencies.Count);
-        Assert.AreEqual("string", result.ConstructorDependencies[0].Type);
-        Assert.AreEqual("CustomerId", result.ConstructorDependencies[0].Name);
-        Assert.AreEqual("decimal", result.ConstructorDependencies[1].Type);
-        Assert.AreEqual("Total", result.ConstructorDependencies[1].Name);
+        Assert.IsNull(result.ConstructorDependencies);
+        Assert.IsNotNull(result.Properties);
+        CollectionAssert.AreEqual(
+            new[] { "CustomerId:string", "Total:decimal" },
+            result.Properties.Select(p => $"{p.Name}:{p.Type}").ToArray());
     }
 
     // ── Static / abstract classes ─────────────────────────────────────────────

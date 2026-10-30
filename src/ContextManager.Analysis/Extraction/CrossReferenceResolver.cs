@@ -67,7 +67,7 @@ public class CrossReferenceResolver
                 {
                     foreach (var param in ctorParameters.Value)
                     {
-                        if (param.Type is null) continue;
+                        if (param.Type is null || IsPredefined(param.Type)) continue;
                         var symbol = model.GetTypeInfo(param.Type, ct).Type;
                         var toName = param.Type.ToString();
                         var resolvedFile = ResolveFile(symbol, inputPaths);
@@ -92,7 +92,7 @@ public class CrossReferenceResolver
 
                     foreach (var param in method.ParameterList.Parameters)
                     {
-                        if (param.Type is null) continue;
+                        if (param.Type is null || IsPredefined(param.Type)) continue;
                         var symbol = model.GetTypeInfo(param.Type, ct).Type;
                         var toName = param.Type.ToString();
                         var resolvedFile = ResolveFile(symbol, inputPaths);
@@ -168,6 +168,9 @@ public class CrossReferenceResolver
 
         return symbol.DeclaringSyntaxReferences.IsEmpty;
     }
+
+    private static bool IsPredefined(TypeSyntax type) =>
+        type is PredefinedTypeSyntax or NullableTypeSyntax { ElementType: PredefinedTypeSyntax };
 
     // Strip generic type arguments for comparison (e.g. "List<T>" → "List")
     private static string StripGenerics(string typeName)

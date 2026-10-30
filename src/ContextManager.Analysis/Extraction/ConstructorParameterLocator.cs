@@ -5,16 +5,16 @@ namespace ContextManager.Analysis.Extraction;
 
 /// <summary>
 /// Single source of truth for a type's dependency-bearing constructor parameters:
-/// the C# 12 primary constructor (<see cref="TypeDeclarationSyntax.ParameterList"/>,
-/// valid for classes, records, and structs alike) wins; otherwise the non-static
-/// declared constructor with the most parameters. Returns null when the type has
-/// neither.
+/// the C# 12 primary constructor of a class or struct (<see cref="TypeDeclarationSyntax.ParameterList"/>)
+/// wins; otherwise the non-static declared constructor with the most parameters. A record's
+/// positional parameter list declares properties, not dependencies, and is never returned.
+/// Returns null when the type has neither.
 /// </summary>
 public static class ConstructorParameterLocator
 {
     public static SeparatedSyntaxList<ParameterSyntax>? Locate(TypeDeclarationSyntax node)
     {
-        if (node.ParameterList is not null)
+        if (node.ParameterList is not null && node is not RecordDeclarationSyntax)
             return node.ParameterList.Parameters;
 
         var ctors = node.Members

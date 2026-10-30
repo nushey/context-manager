@@ -160,18 +160,15 @@ public class MemberExtractorModernCSharpTests
     }
 
     [TestMethod]
-    public void Record_PrimaryConstructorParametersInConstructorDependencies()
+    public void Record_PrimaryConstructorParametersAreProperties()
     {
         var node = GetRecordByName("OrderSummary");
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.IsNotNull(result.ConstructorDependencies);
-        Assert.AreEqual(3, result.ConstructorDependencies.Count);
-        Assert.AreEqual("string", result.ConstructorDependencies[0].Type);
-        Assert.AreEqual("OrderId", result.ConstructorDependencies[0].Name);
-        Assert.AreEqual("decimal", result.ConstructorDependencies[1].Type);
-        Assert.AreEqual("Total", result.ConstructorDependencies[1].Name);
-        Assert.AreEqual("string?", result.ConstructorDependencies[2].Type);
-        Assert.AreEqual("Notes", result.ConstructorDependencies[2].Name);
+        Assert.IsNull(result.ConstructorDependencies);
+        Assert.IsNotNull(result.Properties);
+        CollectionAssert.AreEqual(
+            new[] { "OrderId:string", "Total:decimal", "Notes:string?" },
+            result.Properties.Select(p => $"{p.Name}:{p.Type}").ToArray());
     }
 }

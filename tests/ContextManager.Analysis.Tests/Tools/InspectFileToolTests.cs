@@ -80,6 +80,28 @@ public class InspectFileToolTests : FixtureTest
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_GraphPersisted_DirectCallersExcludeImplementors()
+    {
+        var directory = NewTempDirectory();
+        File.WriteAllText(Path.Combine(directory, "App.sln"), string.Empty);
+        var source = WriteSource(directory);
+        var store = new GraphStore();
+        var service = new GraphNode("App.Service", "Class", source);
+        store.AddEdge(new GraphEdge(new GraphNode("App.Implementation", "Class", "/src/Implementation.cs"), service, "IMPLEMENTS"));
+        store.AddEdge(new GraphEdge(new GraphNode("App.Consumer", "Class", "/src/Consumer.cs"), service, "INJECTS"));
+        var graphPath = GraphRegistry.GetGraphPath(Path.Combine(directory, "App.sln"));
+        Directory.CreateDirectory(Path.GetDirectoryName(graphPath)!);
+        File.WriteAllText(graphPath, store.Serialize());
+        var tool = new InspectFileTool(new FileAnalyzer(), new GraphEnricher(new GraphRegistry()));
+
+        var full = JsonSerializer.Deserialize<FileAnalysis>(await tool.AnalyzeAsync(source), AnalysisJson.Options)!;
+
+        var graph = full.Types.Single(t => t.Name == "Service").Graph!;
+        Assert.AreEqual(2, graph.InboundCount);
+        CollectionAssert.AreEqual(new[] { "App.Consumer" }, graph.DirectCallers!.Select(e => e.Id).ToArray());
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_SolutionWithoutGraph_ReportsNotInitializedWithSolutionPath()
     {
         var directory = NewTempDirectory();

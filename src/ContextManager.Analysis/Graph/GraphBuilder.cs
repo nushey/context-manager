@@ -112,6 +112,24 @@ public class GraphBuilder
                 if (memberNode is not null)
                     nodes.Add(memberNode);
             }
+
+            foreach (var (positionalProperty, _) in EdgeExtractor.PositionalProperties(model, typeDecl, typeSymbol, ct))
+            {
+                if (NodeClassifier.NodeFor(positionalProperty, filePath) is { } propertyNode)
+                    nodes.Add(propertyNode);
+            }
+
+            foreach (var constructor in typeSymbol.InstanceConstructors)
+            {
+                if (NodeClassifier.NodeFor(constructor, filePath) is { } constructorNode)
+                    nodes.Add(constructorNode);
+            }
+        }
+
+        if (EdgeExtractor.TopLevelNodes(model, root, ct) is var (programNode, entryPointNode))
+        {
+            nodes.Add(programNode);
+            nodes.Add(entryPointNode);
         }
 
         return nodes;

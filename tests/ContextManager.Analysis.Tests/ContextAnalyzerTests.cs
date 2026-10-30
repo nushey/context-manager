@@ -259,4 +259,14 @@ public class ContextAnalyzerTests
         Assert.AreEqual(path, reference.ResolvedFile);
         CollectionAssert.DoesNotContain(result.Unresolved.ToList(), "CancellationToken");
     }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_AspNetCoreBaseType_ResolvedAndPredefinedTypesOmitted()
+    {
+        var result = await CreateAnalyzer().AnalyzeAsync([FixturePath("AspNetController.cs")]);
+
+        CollectionAssert.DoesNotContain(result.Unresolved.ToList(), "ControllerBase");
+        Assert.IsFalse(result.References.Any(r => r.To is "int" or "string?"),
+            string.Join(", ", result.References.Select(r => $"{r.To}:{r.Via}")));
+    }
 }

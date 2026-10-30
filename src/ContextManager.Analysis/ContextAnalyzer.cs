@@ -17,18 +17,51 @@ public class ContextAnalyzer
         global using System.Threading.Tasks;
         """;
 
-    // BCL metadata references built once per process from the runtime's trusted platform
-    // assemblies. Without them the compilation resolves nothing — every predefined/BCL type
-    // becomes an error symbol and pollutes the unresolved list.
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> BclReferences = new(() =>
-        AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string tpa
-            ? tpa.Split(Path.PathSeparator)
-                 .Where(File.Exists)
-                 .Select(p => (MetadataReference)MetadataReference.CreateFromFile(p))
-                 .ToList()
-            : (IReadOnlyList<MetadataReference>)[]);
+    // Framework metadata references built once per process from the runtime's trusted platform
+    // assemblies plus every other installed shared framework of the same version (ASP.NET Core,
+    // Windows Desktop). Without them the compilation resolves nothing — every predefined or
+    // framework type becomes an error symbol and pollutes the unresolved list.
+    private static readonly Lazy<IReadOnlyList<MetadataReference>> FrameworkReferences = new(() =>
+    {
+        var trusted = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string tpa
+            ? tpa.Split(Path.PathSeparator).Where(File.Exists).ToList()
+            : [];
+
+        var assemblyNames = new HashSet<string>(trusted.Select(Path.GetFileName)!, StringComparer.OrdinalIgnoreCase);
+        var paths = trusted.Concat(SharedFrameworkAssemblies().Where(p => assemblyNames.Add(Path.GetFileName(p))));
+
+        return paths.Select(p => (MetadataReference)MetadataReference.CreateFromFile(p)).ToList();
+    });
 
     private readonly CrossReferenceResolver _resolver;
+
+    private static IEnumerable<string> SharedFrameworkAssemblies()
+    {
+        var runtimeDirectory = new DirectoryInfo(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory());
+        var sharedDirectory = runtimeDirectory.Parent?.Parent;
+        if (sharedDirectory is null || !sharedDirectory.Exists)
+            return [];
+
+        return sharedDirectory.EnumerateDirectories()
+            .Where(framework => framework.FullName != runtimeDirectory.Parent!.FullName)
+            .Select(framework => Path.Combine(framework.FullName, runtimeDirectory.Name))
+            .Where(Directory.Exists)
+            .SelectMany(directory => Directory.EnumerateFiles(directory, "*.dll"))
+            .Where(IsManagedAssembly);
+    }
+
+    private static bool IsManagedAssembly(string path)
+    {
+        try
+        {
+            System.Reflection.AssemblyName.GetAssemblyName(path);
+            return true;
+        }
+        catch (BadImageFormatException)
+        {
+            return false;
+        }
+    }
 
     public ContextAnalyzer(CrossReferenceResolver resolver)
     {
@@ -61,7 +94,7 @@ public class ContextAnalyzer
         var compilation = CSharpCompilation.Create(
             assemblyName: "ContextAnalysis",
             syntaxTrees: treeByPath.Values.Append(implicitUsingsTree),
-            references: BclReferences.Value);
+            references: FrameworkReferences.Value);
 
         var files = new List<ContextFileAnalysis>(filePaths.Count);
 
