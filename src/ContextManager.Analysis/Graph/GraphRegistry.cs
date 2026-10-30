@@ -29,11 +29,9 @@ public class GraphRegistry
 
     public GraphStore GetStore(string solutionPath) => GetEntry(GetGraphPath(solutionPath)).Store;
 
-    public GraphStore? TryLoad(string solutionPath) => TryLoadGraph(GetGraphPath(solutionPath));
-
-    public GraphStore? TryLoadGraph(string graphPath)
+    public GraphStore? TryLoad(string solutionPath)
     {
-        graphPath = Path.GetFullPath(graphPath);
+        var graphPath = Path.GetFullPath(GetGraphPath(solutionPath));
         if (!File.Exists(graphPath))
             return null;
 
@@ -49,34 +47,6 @@ public class GraphRegistry
         }
 
         return entry.Store;
-    }
-
-    /// <summary>
-    /// Resolves the graph that covers <paramref name="pathOrFile"/> (a .sln, a source file, or a
-    /// directory) by walking up from its directory to the first directory that holds a
-    /// <c>.context-manager/graph.json</c> or at least one <c>.sln</c> file. Returns null when no
-    /// such directory exists; several solutions in that directory are all returned so the caller
-    /// never picks one arbitrarily.
-    /// </summary>
-    public GraphLocation? TryResolveSolutionPath(string pathOrFile)
-    {
-        var fullPath = Path.GetFullPath(pathOrFile);
-        if (fullPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
-            return new GraphLocation(GetGraphPath(fullPath), [fullPath]);
-
-        var directory = Directory.Exists(fullPath) ? new DirectoryInfo(fullPath) : new FileInfo(fullPath).Directory;
-        for (; directory is not null; directory = directory.Parent)
-        {
-            if (!directory.Exists)
-                continue;
-
-            var graphPath = Path.Combine(directory.FullName, ".context-manager", "graph.json");
-            var solutions = directory.GetFiles("*.sln").Select(f => f.FullName).ToList();
-            if (solutions.Count > 0 || File.Exists(graphPath))
-                return new GraphLocation(graphPath, solutions);
-        }
-
-        return null;
     }
 
     internal async Task<IDisposable> AcquireWriterAsync(string solutionPath, CancellationToken ct)

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -19,8 +18,7 @@ public sealed class GraphWorkspaceSession : IDisposable
         IReadOnlyList<GraphBuildDiagnostic> diagnostics,
         IReadOnlyList<GraphTrackedFile> inputs,
         IReadOnlyList<string> candidateFiles,
-        IReadOnlyList<string> sourceRoots,
-        TimeSpan evaluation)
+        IReadOnlyList<string> sourceRoots)
     {
         _workspace = workspace;
         SolutionPath = solutionPath;
@@ -29,7 +27,6 @@ public sealed class GraphWorkspaceSession : IDisposable
         Inputs = inputs;
         CandidateFiles = candidateFiles;
         SourceRoots = sourceRoots;
-        Evaluation = evaluation;
     }
 
     public string SolutionPath { get; }
@@ -38,13 +35,11 @@ public sealed class GraphWorkspaceSession : IDisposable
     public IReadOnlyList<GraphTrackedFile> Inputs { get; }
     public IReadOnlyList<string> CandidateFiles { get; }
     public IReadOnlyList<string> SourceRoots { get; }
-    public TimeSpan Evaluation { get; }
     public string? Revision { get; private set; }
 
     public static async Task<GraphWorkspaceSession> OpenAsync(string solutionPath, CancellationToken ct)
     {
         var evaluationStartedUtc = DateTime.UtcNow;
-        var timer = Stopwatch.StartNew();
         var workspace = MSBuildWorkspace.Create();
         try
         {
@@ -70,13 +65,12 @@ public sealed class GraphWorkspaceSession : IDisposable
                 .Select(input => configs.GetValueOrDefault(input.Path) ?? input)
                 .ToList();
             var candidates = ScanCandidateFiles(projectFiles, sourceRoots, evaluationStartedUtc);
-            timer.Stop();
 
             List<GraphBuildDiagnostic> diagnosticSnapshot;
             lock (diagnostics)
                 diagnosticSnapshot = diagnostics.ToList();
 
-            return new GraphWorkspaceSession(workspace, solutionPath, solution, diagnosticSnapshot, inputs, candidates, sourceRoots, timer.Elapsed);
+            return new GraphWorkspaceSession(workspace, solutionPath, solution, diagnosticSnapshot, inputs, candidates, sourceRoots);
         }
         catch
         {

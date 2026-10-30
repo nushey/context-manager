@@ -294,58 +294,6 @@ public class GraphStoreTests
         Assert.AreEqual(1, neighbors[2].EdgeKinds["CALLS"]);
     }
 
-    // ── BfsBackward ──────────────────────────────────────────────────────────
-
-    [TestMethod]
-    public void BfsBackward_FromC_FollowingCalls_ReturnsBThenA()
-    {
-        var store = BuildSampleGraph();
-        // C <- B (CALLS) <- A (CALLS)
-        var result = store.BfsBackward("C", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(2, result.Count);
-        Assert.AreEqual("B", result[0]); // BFS level 1
-        Assert.AreEqual("A", result[1]); // BFS level 2
-    }
-
-    [TestMethod]
-    public void BfsBackward_FromD_FollowingInjects_ReturnsBothCallers()
-    {
-        var store = BuildSampleGraph();
-        // D <- A (INJECTS), D <- B (INJECTS)
-        var result = store.BfsBackward("D", new HashSet<string> { "INJECTS" }).Order().ToList();
-
-        CollectionAssert.AreEqual(new[] { "A", "B" }, result);
-    }
-
-    [TestMethod]
-    public void BfsBackward_EdgeTypeNotMatching_ReturnsEmpty()
-    {
-        var store = BuildSampleGraph();
-        // No INHERITS edges in the graph
-        var result = store.BfsBackward("C", new HashSet<string> { "INHERITS" });
-
-        Assert.AreEqual(0, result.Count);
-    }
-
-    [TestMethod]
-    public void BfsBackward_UnknownStartNode_ReturnsEmpty()
-    {
-        var store = BuildSampleGraph();
-        var result = store.BfsBackward("Z", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(0, result.Count);
-    }
-
-    [TestMethod]
-    public void BfsBackward_DoesNotIncludeStartNode()
-    {
-        var store = BuildSampleGraph();
-        var result = store.BfsBackward("C", new HashSet<string> { "CALLS" });
-
-        Assert.IsFalse(result.Contains("C"), "Start node must not appear in result");
-    }
-
     // ── ShortestPath ─────────────────────────────────────────────────────────
 
     [TestMethod]
@@ -403,60 +351,8 @@ public class GraphStoreTests
         Assert.AreEqual(0, path.Count);
     }
 
-    // ── Cycles: BfsBackward + ShortestPath ──────────────────────────────────
+    // ── Cycles: ShortestPath ──────────────────────────────────
     // Regression tests for "infinite loop" reports on cyclic graphs.
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_SelfLoop_DoesNotLoop()
-    {
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        store.AddNode(a);
-        store.AddEdge(new GraphEdge(a, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(0, result.Count, "Self-loop must not include A in its own backward set.");
-    }
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_TwoNodeCycle_TerminatesAndReturnsOtherNode()
-    {
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        var b = new GraphNode("B", "Class");
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
-
-        CollectionAssert.AreEqual(new[] { "B" }, result.ToList());
-    }
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_ThreeNodeCycle_VisitsEachOnce()
-    {
-        // A -> B -> C -> A
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        var b = new GraphNode("B", "Class");
-        var c = new GraphNode("C", "Class");
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddNode(c);
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, c, "CALLS"));
-        store.AddEdge(new GraphEdge(c, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" }).Order().ToList();
-
-        CollectionAssert.AreEqual(new[] { "B", "C" }, result);
-    }
 
     [TestMethod]
     [Timeout(5_000)]
@@ -497,31 +393,6 @@ public class GraphStoreTests
 
     [TestMethod]
     [Timeout(15_000)]
-    public void BfsBackward_LargeCyclicGraph_TerminatesQuickly()
-    {
-        // 5000 nodes in a giant SCC: each node points to the next + cross-edges back.
-        var store = new GraphStore();
-        const int n = 5000;
-        for (var i = 0; i < n; i++)
-            store.AddNode(new GraphNode($"N{i}", "Class"));
-
-        for (var i = 0; i < n; i++)
-        {
-            var src = new GraphNode($"N{i}", "Class");
-            var nextId = (i + 1) % n;
-            var crossId = (i + 7) % n; // cross-edge to introduce many cycles
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{nextId}", "Class"), "CALLS"));
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{crossId}", "Class"), "CALLS"));
-        }
-
-        var result = store.BfsBackward("N0", new HashSet<string> { "CALLS" });
-
-        // Whole graph is strongly connected → every other node reaches N0.
-        Assert.AreEqual(n - 1, result.Count, $"Expected {n - 1} ancestors, got {result.Count}");
-    }
-
-    [TestMethod]
-    [Timeout(15_000)]
     public void ShortestPath_LargeCyclicGraph_TerminatesQuickly()
     {
         var store = new GraphStore();
@@ -557,7 +428,7 @@ public class GraphStoreTests
         // Note: brand-new instances, not the ones added above.
         store.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
 
-        var result = store.BfsBackward("B", new HashSet<string> { "CALLS" });
+        var result = store.ImpactBackward("B", new HashSet<string> { "CALLS" });
 
         CollectionAssert.AreEqual(new[] { "A" }, result.ToList());
     }
@@ -657,32 +528,11 @@ public class GraphStoreTests
         }
     }
 
-    // ── Clear ────────────────────────────────────────────────────────────────
-
-    [TestMethod]
-    public void Clear_ResetsNodeAndEdgeCount()
-    {
-        var store = BuildSampleGraph();
-        store.Clear();
-
-        Assert.AreEqual(0, store.NodeCount);
-        Assert.AreEqual(0, store.EdgeCount);
-    }
-
-    [TestMethod]
-    public void Clear_TryGetNode_ReturnsFalse()
-    {
-        var store = BuildSampleGraph();
-        store.Clear();
-
-        Assert.IsFalse(store.TryGetNode("A", out _));
-    }
-
     // ── ImpactBackward ───────────────────────────────────────────────────────
 
     /// <summary>
     /// Member roll-up: CallerType.method --CALLS--> StartType.method.
-    /// BfsBackward returns [] (no type→type CALLS), ImpactBackward returns CallerType.
+    /// ImpactBackward returns CallerType.
     /// </summary>
     [TestMethod]
     public void ImpactBackward_MemberCallsMember_RollsUpToCallerType()
@@ -701,9 +551,6 @@ public class GraphStoreTests
         store.AddEdge(new GraphEdge(callerMethod, startMethod, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
-
-        var bfsResult = store.BfsBackward("StartType", edgeTypes);
-        Assert.AreEqual(0, bfsResult.Count, "BfsBackward must see no inbound edges on the type node");
 
         var impactResult = store.ImpactBackward("StartType", edgeTypes);
         CollectionAssert.AreEqual(new[] { "CallerType" }, impactResult.ToList());
@@ -1123,7 +970,7 @@ public class GraphStoreTests
 
         try
         {
-            store.ImpactBackward("T0", edgeTypes, out _, cts.Token);
+            store.ImpactBackward("T0", edgeTypes, cts.Token);
             Assert.Fail("Expected OperationCanceledException for a pre-cancelled token.");
         }
         catch (OperationCanceledException)
@@ -1417,21 +1264,4 @@ public class GraphStoreTests
         Assert.IsFalse(captured.TryGetNode("X", out _));
     }
 
-    [TestMethod]
-    public void TryGetShortNameMatches_MatchesShortQualifiedAndGenericNamesOfTypesOnly()
-    {
-        var store = new GraphStore();
-        store.AddNode(N("App.Orders.IRepository<T>", "Interface"));
-        store.AddNode(N("App.Orders.OrderService"));
-        store.AddNode(N("App.Billing.OrderService"));
-        store.AddNode(N("App.Orders.OrderService.Run()", "Method"));
-
-        CollectionAssert.AreEqual(new[] { "App.Orders.IRepository<T>" },
-            store.TryGetShortNameMatches("IRepository<Order>").Select(n => n.Id).ToList());
-        CollectionAssert.AreEqual(new[] { "App.Orders.OrderService", "App.Billing.OrderService" },
-            store.TryGetShortNameMatches("OrderService").Select(n => n.Id).ToList());
-        CollectionAssert.AreEqual(new[] { "App.Billing.OrderService" },
-            store.TryGetShortNameMatches("Billing.OrderService").Select(n => n.Id).ToList());
-        Assert.AreEqual(0, store.TryGetShortNameMatches("Service").Count);
-    }
 }

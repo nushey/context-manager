@@ -64,7 +64,7 @@ public class GraphSynchronizerTests : FixtureTest
         foreach (var id in ids)
         {
             builder.AppendLine($"D {id} {JsonSerializer.Serialize(store.GetAggregatedNeighbors(id), AnalysisJson.Options)}");
-            builder.AppendLine($"I {id} {string.Join(",", store.ImpactBackward(id, ImpactEdgeTypes, out var bridged))} | {string.Join(",", bridged)}");
+            builder.AppendLine($"I {id} {string.Join(",", store.ImpactBackward(id, ImpactEdgeTypes))}");
             foreach (var target in ids)
                 builder.AppendLine($"S {id} {target} {string.Join(",", store.ShortestPath(id, target))}");
         }
@@ -109,7 +109,6 @@ public class GraphSynchronizerTests : FixtureTest
 
         Assert.IsFalse(result.Changed);
         Assert.AreEqual(0, result.ExtractedDocuments.Count);
-        Assert.AreEqual(TimeSpan.Zero, result.Timings.Evaluation);
         Assert.AreEqual(before, (File.GetLastWriteTimeUtc(graphPath), File.ReadAllText(graphPath)));
     }
 
@@ -126,7 +125,6 @@ public class GraphSynchronizerTests : FixtureTest
         var result = await SyncAsync(synchronizer, directory);
 
         CollectionAssert.AreEqual(new[] { "Core/Sender.cs" }, Relative(result, directory));
-        Assert.AreEqual(TimeSpan.Zero, result.Timings.Evaluation);
         Assert.IsFalse(result.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.Sender").Any(n => n.Id == "IncrementalFixtures.Core.Audit"));
         await AssertMatchesFreshScanAsync(result.Graph, directory);
     }

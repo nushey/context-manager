@@ -35,9 +35,9 @@ public class GraphQueryToolTests : FixtureTest
 
         var results = new[]
         {
-            await new GraphGetDependenciesTool(registry).GraphGetDependenciesAsync(solutionPath, "A"),
-            await new GraphImpactAnalysisTool(registry).GraphImpactAnalysisAsync(solutionPath, "A"),
-            await new GraphPathFindTool(registry).GraphPathFindAsync(solutionPath, "A", "B"),
+            await new GraphGetDependenciesTool(new PersistedGraphSynchronizer(registry)).GraphGetDependenciesAsync(solutionPath, "A"),
+            await new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(registry)).GraphImpactAnalysisAsync(solutionPath, "A"),
+            await new GraphPathFindTool(new PersistedGraphSynchronizer(registry)).GraphPathFindAsync(solutionPath, "A", "B"),
         };
 
         foreach (var json in results)
@@ -52,7 +52,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphGetDependencies_GraphJsonRewrittenByAnotherSession_ReloadsOnNextQuery()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
         var before = await tool.GraphGetDependenciesAsync(solutionPath, "Fresh");
         Assert.AreEqual("node_not_found", JsonSerializer.Deserialize<AnalysisError>(before, AnalysisJson.Options)?.Code);
 
@@ -74,7 +74,7 @@ public class GraphQueryToolTests : FixtureTest
         other.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("Z", "Class"), "CALLS"));
         var sampleSolution = PersistGraph(BuildSampleStore());
         var otherSolution = PersistGraph(other);
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var sample = JsonSerializer.Deserialize<List<GraphNodeContract>>(
             await tool.GraphGetDependenciesAsync(sampleSolution, "A"), AnalysisJson.Options);
@@ -119,7 +119,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphGetDependencies_UnknownNode_ReturnsNodeNotFoundError()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "UNKNOWN");
 
@@ -133,7 +133,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphGetDependencies_KnownNode_ReturnsAggregatedContractsWithEdgeKinds()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // Node A has out-edges to B (CALLS) and D (INJECTS), no in-edges
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "A");
@@ -152,7 +152,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphGetDependencies_NodeWithIncomingEdge_IncludesSourceNeighborWithInDirection()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // Node D has in-edges from A (INJECTS) and B (INJECTS), no out-edges
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "D");
@@ -173,7 +173,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphGetDependencies_ContractHasCorrectKindAndEdgeKindCounts()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "A");
 
@@ -205,7 +205,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(b, a, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "A");
 
         var contracts = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options);
@@ -233,7 +233,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(consumerUse, helperRun, "CALLS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphGetDependenciesTool(new GraphRegistry());
+        var tool = new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry()));
         var json = await tool.GraphGetDependenciesAsync(solutionPath, "Helper");
 
         var contracts = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options);
@@ -252,7 +252,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphImpactAnalysis_UnknownNode_ReturnsNodeNotFoundError()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "UNKNOWN");
 
@@ -266,7 +266,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphImpactAnalysis_LeafNode_ReturnsAncestors()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // C has in-edge from B (CALLS). B has in-edge from A (CALLS).
         // Impact backward from C: first B, then A.
@@ -277,14 +277,13 @@ public class GraphQueryToolTests : FixtureTest
         Assert.AreEqual(2, result!.AffectedIds.Count);
         Assert.AreEqual("B", result.AffectedIds[0]);
         Assert.AreEqual("A", result.AffectedIds[1]);
-        Assert.AreEqual(0, result.Diagnostics.Count);
     }
 
     [TestMethod]
     public async Task GraphImpactAnalysis_SharedDependency_ReturnsAllCallers()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // D has in-edges from A (INJECTS) and B (INJECTS).
         // Impact backward from D: A and B (order depends on insertion order).
@@ -299,7 +298,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphImpactAnalysis_NodeWithNoCallers_ReturnsEmptyAffectedIds()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // A has no in-edges → empty impact result.
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "A");
@@ -307,34 +306,6 @@ public class GraphQueryToolTests : FixtureTest
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         Assert.IsNotNull(result);
         Assert.AreEqual(0, result!.AffectedIds.Count);
-        Assert.AreEqual(0, result.Diagnostics.Count);
-    }
-
-    [TestMethod]
-    public async Task GraphImpactAnalysis_InterfaceWithNoImplementations_EmitsReflectionDiagnostic()
-    {
-        // Graph: X --INJECTS--> IService
-        // IService has no inbound IMPLEMENTS edges → reflection blind spot.
-        var store = new GraphStore();
-        var x = new GraphNode("X", "Class");
-        var iface = new GraphNode("IService", "Interface");
-        store.AddNode(x);
-        store.AddNode(iface);
-        store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
-
-        var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
-
-        var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IService");
-
-        var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
-        Assert.IsNotNull(result);
-        // X injects IService, so X is an affected caller.
-        CollectionAssert.AreEquivalent(new[] { "X" }, result!.AffectedIds.ToList());
-        // IService has no implementations → one diagnostic entry.
-        Assert.AreEqual(1, result.Diagnostics.Count);
-        Assert.AreEqual("reflection_blind_spot", result.Diagnostics[0].Code);
-        Assert.AreEqual("IService", result.Diagnostics[0].InterfaceId);
     }
 
     [TestMethod]
@@ -342,7 +313,6 @@ public class GraphQueryToolTests : FixtureTest
     {
         // Graph: Impl --IMPLEMENTS--> IService
         //        X --INJECTS--> IService
-        // IService has one inbound IMPLEMENTS edge → no reflection blind spot.
         var store = new GraphStore();
         var impl = new GraphNode("Impl", "Class");
         var x = new GraphNode("X", "Class");
@@ -354,13 +324,12 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IService");
 
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         Assert.IsNotNull(result);
-        Assert.AreEqual(0, result!.Diagnostics.Count);
         // Bug 3 lock-in: the implementor Impl must now appear alongside the direct consumer X.
         CollectionAssert.AreEquivalent(new[] { "Impl", "X" }, result.AffectedIds.ToList());
     }
@@ -368,12 +337,8 @@ public class GraphQueryToolTests : FixtureTest
     [TestMethod]
     public async Task GraphImpactAnalysis_ClassImplementsUnboundInterface_EmitsDiagnosticForInterface()
     {
-        // Graph: ConcreteClass --IMPLEMENTS--> IService (IService has no other IMPLEMENTS edges)
+        // Graph: ConcreteClass --IMPLEMENTS--> IService
         //        X --INJECTS--> IService
-        // Analyzing ConcreteClass: it implements IService but IService has no OTHER inbound IMPLEMENTS.
-        // Wait — ConcreteClass itself provides an implementation so IService DOES have an implementation.
-        // This test verifies the positive (non-false-positive) path for a concrete class that
-        // implements an interface WITH at least one implementation present.
         var store = new GraphStore();
         var concrete = new GraphNode("ConcreteClass", "Class");
         var iface = new GraphNode("IService", "Interface");
@@ -385,14 +350,12 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
-        // Analyzing ConcreteClass — it implements IService which has 1 inbound IMPLEMENTS → no diagnostic.
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "ConcreteClass");
 
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         Assert.IsNotNull(result);
-        Assert.AreEqual(0, result!.Diagnostics.Count);
         // Bug 3 lock-in: ConcreteClass is the start node (its outbound interface IService is
         // bridged out of the result), but X — which injects IService — surfaces transitively
         // through that bridged interface.
@@ -416,7 +379,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(x, iface, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IService");
 
@@ -443,7 +406,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(service, user, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IEntity");
 
@@ -468,7 +431,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(iTransitive, iStart, "INJECTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IStart");
 
@@ -496,7 +459,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(impl, iDerived, "IMPLEMENTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "IBase");
 
@@ -523,7 +486,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(other, iShared, "IMPLEMENTS"));
 
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "Start");
 
@@ -539,7 +502,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_UnknownSource_ReturnsNodeNotFoundError()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphPathFindAsync(solutionPath, "UNKNOWN", "B");
 
@@ -553,7 +516,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_UnknownTarget_ReturnsNodeNotFoundError()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphPathFindAsync(solutionPath, "A", "UNKNOWN");
 
@@ -567,7 +530,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_NoDirectedPath_ReturnsNoPathError()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // C → A: no directed path exists (edges go A→B→C, not backward).
         var json = await tool.GraphPathFindAsync(solutionPath, "C", "A");
@@ -581,7 +544,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_DirectPath_ReturnsCorrectSequence()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         // A → C: A --CALLS--> B --CALLS--> C
         var json = await tool.GraphPathFindAsync(solutionPath, "A", "C");
@@ -598,7 +561,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_SameSourceAndTarget_ReturnsSingleElement()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphPathFindAsync(solutionPath, "A", "A");
 
@@ -612,7 +575,7 @@ public class GraphQueryToolTests : FixtureTest
     public async Task GraphPathFind_AdjacentNodes_ReturnsTwoElementPath()
     {
         var solutionPath = PersistGraph(BuildSampleStore());
-        var tool = new GraphPathFindTool(new GraphRegistry());
+        var tool = new GraphPathFindTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphPathFindAsync(solutionPath, "A", "B");
 
@@ -629,7 +592,7 @@ public class GraphQueryToolTests : FixtureTest
         var store = new GraphStore();
         store.AddEdge(new GraphEdge(new GraphNode("Derived", "Class"), new GraphNode("Base", "Class"), "INHERITS"));
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var json = await tool.GraphImpactAnalysisAsync(solutionPath, "Base");
 
@@ -647,7 +610,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(new GraphNode("A", "Class", "/src/A.cs"), new GraphNode("NoFile", "Class"), "CALLS"));
         var solutionPath = PersistGraph(store);
 
-        var json = await new GraphGetDependenciesTool(new GraphRegistry()).GraphGetDependenciesAsync(solutionPath, "A");
+        var json = await new GraphGetDependenciesTool(new PersistedGraphSynchronizer(new GraphRegistry())).GraphGetDependenciesAsync(solutionPath, "A");
 
         var neighbors = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options)!;
         Assert.AreEqual("/src/B.cs", neighbors.Single(n => n.Id == "B").File);
@@ -662,7 +625,7 @@ public class GraphQueryToolTests : FixtureTest
         store.AddEdge(new GraphEdge(new GraphNode("B", "Class", "/src/B.cs"), new GraphNode("C", "Class", "/src/C.cs"), "CALLS"));
         store.AddEdge(new GraphEdge(new GraphNode("A", "Class", "/src/A.cs"), new GraphNode("B", "Class", "/src/B.cs"), "CALLS"));
         var solutionPath = PersistGraph(store);
-        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+        var tool = new GraphImpactAnalysisTool(new PersistedGraphSynchronizer(new GraphRegistry()));
 
         var impact = JsonSerializer.Deserialize<GraphImpactResult>(await tool.GraphImpactAnalysisAsync(solutionPath, "C"), AnalysisJson.Options)!;
         var none = await tool.GraphImpactAnalysisAsync(solutionPath, "A");
@@ -684,11 +647,11 @@ public class GraphQueryToolTests : FixtureTest
         var registry = new GraphRegistry();
         var synchronizer = CreateSynchronizer(registry);
 
-        var dependencies = await new GraphGetDependenciesTool(registry, synchronizer)
+        var dependencies = await new GraphGetDependenciesTool(synchronizer)
             .GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Consumer.Client");
-        var impact = await new GraphImpactAnalysisTool(registry, synchronizer)
+        var impact = await new GraphImpactAnalysisTool(synchronizer)
             .GraphImpactAnalysisAsync(solutionPath, "IncrementalFixtures.Core.Sender");
-        var path = await new GraphPathFindTool(registry, synchronizer)
+        var path = await new GraphPathFindTool(synchronizer)
             .GraphPathFindAsync(solutionPath, "IncrementalFixtures.Consumer.Client", "IncrementalFixtures.Core.Sender");
 
         Assert.IsTrue(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
@@ -710,7 +673,7 @@ public class GraphQueryToolTests : FixtureTest
         var solutionPath = Path.Combine(directory, "Incremental.sln");
         var registry = new GraphRegistry();
         var synchronizer = CreateSynchronizer(registry);
-        var tool = new GraphGetDependenciesTool(registry, synchronizer);
+        var tool = new GraphGetDependenciesTool(synchronizer);
         var before = await tool.GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Core.Sender");
         StringAssert.Contains(before, "IncrementalFixtures.Core.Audit");
 
@@ -730,9 +693,9 @@ public class GraphQueryToolTests : FixtureTest
 
         var results = new[]
         {
-            await new GraphGetDependenciesTool(registry, synchronizer).GraphGetDependenciesAsync(solutionPath, "A"),
-            await new GraphImpactAnalysisTool(registry, synchronizer).GraphImpactAnalysisAsync(solutionPath, "A"),
-            await new GraphPathFindTool(registry, synchronizer).GraphPathFindAsync(solutionPath, "A", "B"),
+            await new GraphGetDependenciesTool(synchronizer).GraphGetDependenciesAsync(solutionPath, "A"),
+            await new GraphImpactAnalysisTool(synchronizer).GraphImpactAnalysisAsync(solutionPath, "A"),
+            await new GraphPathFindTool(synchronizer).GraphPathFindAsync(solutionPath, "A", "B"),
         };
 
         foreach (var json in results)
@@ -762,5 +725,16 @@ public class GraphQueryToolTests : FixtureTest
             JsonSerializer.Deserialize<GraphImpactResult>(impact, AnalysisJson.Options)!.AffectedIds.ToList(),
             "IncrementalFixtures.Core.Sender");
         Assert.AreEqual("no_path", JsonSerializer.Deserialize<AnalysisError>(path, AnalysisJson.Options)?.Code, path);
+    }
+
+    private sealed class PersistedGraphSynchronizer(GraphRegistry registry) : IGraphSynchronizer
+    {
+        public Task<GraphSyncResult?> SynchronizeAsync(string solutionPath, bool reevaluate, CancellationToken ct = default)
+        {
+            var graph = registry.TryLoad(solutionPath)?.Capture();
+            return Task.FromResult(graph is null
+                ? null
+                : new GraphSyncResult(graph, new GraphBuildResult("complete", 0, 0, 0, 0, 0, 0, 0, graph.NodeCount, graph.EdgeCount), false, []));
+        }
     }
 }

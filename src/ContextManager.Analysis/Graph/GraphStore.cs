@@ -227,43 +227,6 @@ public class GraphStore
     }
 
     /// <summary>
-    /// Breadth-first backward traversal: follows in-edges whose Type is in <paramref name="edgeTypes"/>.
-    /// Returns node IDs in BFS visit order, excluding the start node.
-    /// </summary>
-    public IReadOnlyList<string> BfsBackward(string nodeId, IReadOnlySet<string> edgeTypes, CancellationToken ct = default)
-    {
-        var s = _state;
-        if (!s.Nodes.ContainsKey(nodeId))
-            return [];
-
-        var visited = new HashSet<string>(StringComparer.Ordinal) { nodeId };
-        var queue = new Queue<string>();
-        var result = new List<string>();
-
-        queue.Enqueue(nodeId);
-
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-            ct.ThrowIfCancellationRequested();
-
-            foreach (var edge in InEdges(s, current))
-            {
-                if (!edgeTypes.Contains(edge.Type))
-                    continue;
-
-                if (!visited.Add(edge.Source))
-                    continue;
-
-                result.Add(edge.Source);
-                queue.Enqueue(edge.Source);
-            }
-        }
-
-        return result;
-    }
-
-    /// <summary>
     /// Impact-specific backward traversal: seeds the BFS with the start node, its members
     /// (via outbound <c>CONTAINS</c> edges), and any interfaces it implements (via outbound
     /// <c>IMPLEMENTS</c> edges) plus their members. Then follows inbound edges whose type is
@@ -273,23 +236,15 @@ public class GraphStore
     /// (and their members) are fed back into the traversal, guarded by the shared visited set.
     /// Seed nodes and all bridged interfaces/members are excluded from the result.
     /// Returns type IDs in BFS first-visit order, deduplicated.
-    /// <paramref name="bridgedInterfaceIds"/> receives all interface IDs bridged during the
-    /// traversal (including seed-time bridging) — used by diagnostics without a second graph walk.
     /// </summary>
     public IReadOnlyList<string> ImpactBackward(
         string nodeId,
         IReadOnlySet<string> edgeTypes,
-        out IReadOnlyList<string> bridgedInterfaceIds,
         CancellationToken ct = default)
     {
         var s = _state;
         if (!s.Nodes.ContainsKey(nodeId))
-        {
-            bridgedInterfaceIds = [];
             return [];
-        }
-
-        var bridged = new List<string>();
 
         // Build seed: start node + its members + implemented interfaces + their members.
         var seeds = new List<string> { nodeId };
@@ -299,7 +254,6 @@ public class GraphStore
         {
             seeds.Add(iface);
             seeds.AddRange(GetContainedMembers(s, iface));
-            bridged.Add(iface);
         }
 
         var seedIds = new HashSet<string>(seeds, StringComparer.Ordinal);
@@ -329,7 +283,6 @@ public class GraphStore
 
                 queue.Enqueue(iface);
                 seedIds.Add(iface);
-                bridged.Add(iface);
 
                 foreach (var member in GetContainedMembers(s, iface))
                 {
@@ -344,8 +297,8 @@ public class GraphStore
             // Inbound IMPLEMENTS: the inverse of outbound bridging. Whenever an interface is
             // dequeued, its implementor classes are real compile-time breakage — they go INTO
             // the result (rolled up if a member) AND are enqueued for full transitive reach.
-            // Unlike bridged interfaces, implementors are NOT added to seedIds/bridged, so the
-            // reflection diagnostic and result-vs-routing distinction are preserved.
+            // Unlike bridged interfaces, implementors are NOT added to seedIds, so the
+            // result-vs-routing distinction is preserved.
             foreach (var implementor in GetImplementors(s, current))
             {
                 if (!visited.Add(implementor))
@@ -382,64 +335,7 @@ public class GraphStore
             }
         }
 
-        bridgedInterfaceIds = bridged;
         return result;
-    }
-
-    /// <summary>
-    /// Overload without the <c>bridgedInterfaceIds</c> out parameter — convenience for callers
-    /// that do not need diagnostic data.
-    /// </summary>
-    public IReadOnlyList<string> ImpactBackward(string nodeId, IReadOnlySet<string> edgeTypes) =>
-        ImpactBackward(nodeId, edgeTypes, out _);
-
-    /// <summary>
-    /// Returns the IDs of interface nodes that <paramref name="nodeId"/> implements
-    /// (outbound <c>IMPLEMENTS</c> edges). Returns empty if the node is unknown or
-    /// has no outbound IMPLEMENTS edges.
-    /// </summary>
-    public IReadOnlyList<string> GetImplementedInterfaceIds(string nodeId) =>
-        GetImplementedInterfaces(_state, nodeId).ToList();
-
-    /// <summary>
-    /// Returns the type nodes (Class, Interface, Record) whose ID matches a short or qualified type
-    /// name once generic argument lists are ignored: the full ID itself, or any ID ending with
-    /// <c>.</c> plus the name. Matches are returned in graph-encounter order.
-    /// </summary>
-    public IReadOnlyList<GraphNode> TryGetShortNameMatches(string shortOrFullTypeName)
-    {
-        var s = _state;
-        var name = StripGenericArguments(shortOrFullTypeName.Trim());
-        if (name.Length == 0)
-            return [];
-
-        var suffix = "." + name;
-        return s.NodeOrder.Values
-            .Select(id => s.Nodes[id].Node)
-            .Where(n => NodeClassifier.IsTypeKind(n.Kind))
-            .Where(n =>
-            {
-                var id = StripGenericArguments(n.Id);
-                return id == name || id.EndsWith(suffix, StringComparison.Ordinal);
-            })
-            .ToList();
-    }
-
-    private static string StripGenericArguments(string name)
-    {
-        var builder = new System.Text.StringBuilder(name.Length);
-        var depth = 0;
-        foreach (var c in name)
-        {
-            if (c == '<')
-                depth++;
-            else if (c == '>')
-                depth--;
-            else if (depth == 0)
-                builder.Append(c);
-        }
-
-        return builder.ToString();
     }
 
     // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
@@ -475,29 +371,6 @@ public class GraphStore
 
     private static IEnumerable<EdgeKey> InEdges(State state, string id) =>
         state.In.TryGetValue(id, out var edges) ? edges.Values : [];
-
-    /// <summary>
-    /// Given a set of interface node IDs, returns those IDs for which no inbound
-    /// <c>IMPLEMENTS</c> edge exists in the graph — probable reflection/dynamic blind spots.
-    /// Only IDs that actually exist in the graph and whose node kind is <c>Interface</c>
-    /// are checked; unknown or non-interface IDs are silently skipped.
-    /// </summary>
-    public IReadOnlyList<string> GetInterfacesWithNoImplementations(IEnumerable<string> interfaceIds)
-    {
-        var s = _state;
-        var result = new List<string>();
-
-        foreach (var id in interfaceIds)
-        {
-            if (NodeOf(s, id) is not { Kind: "Interface" })
-                continue;
-
-            if (!GetImplementors(s, id).Any())
-                result.Add(id);
-        }
-
-        return result;
-    }
 
     /// <summary>
     /// Returns the ordered node IDs forming the directed shortest path from source to target
@@ -621,11 +494,6 @@ public class GraphStore
             Revision = payload.Revision,
             Baseline = payload.Baseline
         };
-    }
-
-    public void Clear()
-    {
-        _state = State.Empty;
     }
 
     private static IReadOnlyList<string> BuildPath(

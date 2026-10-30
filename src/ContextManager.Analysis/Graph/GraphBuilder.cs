@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -27,15 +26,12 @@ public class GraphBuilder
         IReadOnlySet<DocumentId>? selectedDocuments,
         CancellationToken ct = default)
     {
-        var compilationTimer = Stopwatch.StartNew();
         var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
-        compilationTimer.Stop();
 
         var documents = new Dictionary<DocumentId, GraphDocumentRecord?>();
         if (compilation is null)
-            return new GraphProjectExtraction(false, documents, compilationTimer.Elapsed, TimeSpan.Zero);
+            return new GraphProjectExtraction(false, documents);
 
-        var extractionTimer = Stopwatch.StartNew();
         for (var documentOrder = 0; documentOrder < project.DocumentIds.Count; documentOrder++)
         {
             ct.ThrowIfCancellationRequested();
@@ -47,8 +43,7 @@ public class GraphBuilder
                 project.GetDocument(documentId)!, compilation, projectKey, projectOrder, documentOrder, ct);
         }
 
-        extractionTimer.Stop();
-        return new GraphProjectExtraction(true, documents, compilationTimer.Elapsed, extractionTimer.Elapsed);
+        return new GraphProjectExtraction(true, documents);
     }
 
     private async Task<GraphDocumentRecord?> ExtractDocumentAsync(
