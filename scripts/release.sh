@@ -25,7 +25,7 @@ set -euo pipefail
 #   G. Tag           — annotated vX.Y.Z on the merge commit
 #   H. Publish       — dotnet nuget push (point of no return)
 #   I. Propagate     — push main + tag, fast-forward dev onto main, push dev,
-#                      delete release/vX.Y.Z, return to the source branch
+#                      delete release/vX.Y.Z, remain on dev
 # ---------------------------------------------------------------------------
 
 CSPROJ="src/ContextManager.Mcp/ContextManager.Mcp.csproj"
@@ -62,7 +62,7 @@ TAG=""
 print_dev_steps() {
   red "  git checkout dev && git merge --ff-only main && git push ${REMOTE} dev"
   red "    (if ${REMOTE}/dev moved: git merge ${REMOTE}/dev on dev first, then merge main)"
-  red "  git checkout ${SOURCE_BRANCH} && git branch -D ${RELEASE_BRANCH}"
+  red "  git branch -D ${RELEASE_BRANCH}"
 }
 
 restore_ref() {
@@ -284,11 +284,11 @@ git checkout --quiet dev
 git merge --ff-only --quiet main || die "dev could not fast-forward onto main"
 git push "$REMOTE" dev || die "Failed to push dev"
 
-git checkout --quiet "$SOURCE_BRANCH"
 git branch --quiet -D "$RELEASE_BRANCH"
 STAGE="done"
 
 green "\n✓ Release ${TAG} complete"
 bold "  dev == main == ${TAG}, all pushed to ${REMOTE}"
+bold "  Current branch: dev"
 bold "  Install: dotnet tool install -g ${PACKAGE_ID}"
 bold "  Update:  dotnet tool update -g ${PACKAGE_ID}"
