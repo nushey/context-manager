@@ -106,4 +106,25 @@ public class NodeClassifierTests
         Assert.AreEqual("Method", node!.Kind);
         Assert.AreEqual(sym.ToDisplayString(), node.Id);
     }
+
+    [TestMethod]
+    public void NodeFor_SourceSymbol_UsesDeclaringTreePathNormalized()
+    {
+        var tree = CSharpSyntaxTree.ParseText("namespace N; public class C { }", path: "src/../src/C.cs");
+        var compilation = CSharpCompilation.Create("NodeClassifierFileTest", syntaxTrees: [tree]);
+        var symbol = compilation.GetTypeByMetadataName("N.C")!;
+
+        var node = NodeClassifier.NodeFor(symbol, "/fallback/Other.cs");
+
+        Assert.AreEqual(Path.GetFullPath("src/C.cs"), node?.File);
+    }
+
+    [TestMethod]
+    public void NodeFor_TreeWithoutPath_UsesFallbackOrNull()
+    {
+        var symbol = GetSymbol("public class C { }", "C");
+
+        Assert.AreEqual(Path.GetFullPath("/fallback/C.cs"), NodeClassifier.NodeFor(symbol, "/fallback/C.cs")?.File);
+        Assert.IsNull(NodeClassifier.NodeFor(symbol)?.File);
+    }
 }

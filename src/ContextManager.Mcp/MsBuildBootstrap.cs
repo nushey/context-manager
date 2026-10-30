@@ -5,18 +5,22 @@ namespace ContextManager.Mcp;
 
 internal static class MsBuildBootstrap
 {
+    private static readonly object Gate = new();
     private static string? _selectedIdentity;
 
     // Idempotent: safe to call multiple times. Throws if no MSBuild instance is available.
     public static void EnsureRegistered()
     {
-        if (MSBuildLocator.IsRegistered)
+        lock (Gate)
         {
-            _selectedIdentity ??= "pre-registered by the current process";
-            return;
-        }
+            if (MSBuildLocator.IsRegistered)
+            {
+                _selectedIdentity ??= "pre-registered by the current process";
+                return;
+            }
 
-        Register();
+            Register();
+        }
     }
 
     // Kept separate and non-inlined so no Microsoft.Build type is JIT-touched

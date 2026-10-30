@@ -1,99 +1,161 @@
+using System.Collections.Immutable;
 using System.Text.Json;
-using QuikGraph;
 
 namespace ContextManager.Analysis.Graph;
 
 public class GraphStore
 {
-    // Immutable-once-published snapshot: the graph and its id index move together so a reader
-    // that captures one _state reference observes a consistent pair of collections. A rebuild
-    // constructs a separate staging State and publishes it atomically via CommitRebuild, so
-    // concurrent readers never enumerate a structure being mutated.
-    private sealed class State
+    private readonly record struct Position(int Project, int Document, int Local) : IComparable<Position>
     {
-        public readonly BidirectionalGraph<GraphNode, GraphEdge> Graph = new(allowParallelEdges: true);
-        public readonly Dictionary<string, GraphNode> NodeById = new(StringComparer.Ordinal);
-        public readonly HashSet<(string Source, string Target, string Type)> EdgeKeys = [];
-        public readonly Dictionary<string, GraphNode> OwnerByMemberId = new(StringComparer.Ordinal);
-        public readonly Dictionary<string, List<GraphNode>> MembersByOwnerId = new(StringComparer.Ordinal);
+        public int CompareTo(Position other)
+        {
+            var byProject = Project.CompareTo(other.Project);
+            if (byProject != 0)
+                return byProject;
+
+            var byDocument = Document.CompareTo(other.Document);
+            return byDocument != 0 ? byDocument : Local.CompareTo(other.Local);
+        }
     }
 
-    // Volatile: every reader captures this reference once and reads both collections from it.
-    private volatile State _state = new();
+    private readonly record struct EdgeKey(string Source, string Target, string Type);
 
-    // Staging target for an in-progress rebuild. Volatile because GraphBuilder.BuildWithReportAsync is async
-    // and may resume on a different thread pool thread after an await — the writer must observe the
-    // staging reference set by BeginRebuild. Only the writer (holding _rebuildLock) mutates it.
-    private volatile State? _staging;
-    private readonly SemaphoreSlim _rebuildLock = new(1, 1);
+    private sealed class NodeEntry
+    {
+        public NodeEntry(
+            ImmutableSortedDictionary<Position, GraphNode> declarations,
+            ImmutableSortedDictionary<Position, GraphNode> references)
+        {
+            Declarations = declarations;
+            References = references;
+            Node = (declarations.IsEmpty ? references : declarations).First().Value;
+            First = declarations.IsEmpty ? references.Keys.First()
+                : references.IsEmpty ? declarations.Keys.First()
+                : Min(declarations.Keys.First(), references.Keys.First());
+        }
 
-    public int NodeCount => _state.Graph.VertexCount;
-    public int EdgeCount => _state.Graph.EdgeCount;
-    internal int RebuildNodeCount => (_staging ?? throw new InvalidOperationException("No rebuild is active.")).Graph.VertexCount;
-    internal int RebuildEdgeCount => (_staging ?? throw new InvalidOperationException("No rebuild is active.")).Graph.EdgeCount;
+        public ImmutableSortedDictionary<Position, GraphNode> Declarations { get; }
+        public ImmutableSortedDictionary<Position, GraphNode> References { get; }
+        public GraphNode Node { get; }
+        public Position First { get; }
+
+        private static Position Min(Position a, Position b) => a.CompareTo(b) <= 0 ? a : b;
+    }
+
+    private sealed class EdgeEntry(ImmutableSortedSet<Position> owners)
+    {
+        public ImmutableSortedSet<Position> Owners { get; } = owners;
+        public Position First { get; } = owners.Min;
+    }
+
+    private sealed record State(
+        ImmutableDictionary<string, NodeEntry> Nodes,
+        ImmutableSortedDictionary<Position, string> NodeOrder,
+        ImmutableDictionary<EdgeKey, EdgeEntry> Edges,
+        ImmutableDictionary<string, ImmutableSortedDictionary<Position, EdgeKey>> Out,
+        ImmutableDictionary<string, ImmutableSortedDictionary<Position, EdgeKey>> In,
+        ImmutableDictionary<string, ImmutableSortedDictionary<Position, string>> OwnersByMember,
+        ImmutableDictionary<(string ProjectKey, string Path), GraphDocumentRecord> Documents,
+        int NextAdHocPosition,
+        bool HasProvenance,
+        string? Revision,
+        GraphBaseline? Baseline)
+    {
+        public static readonly State Empty = new(
+            ImmutableDictionary.Create<string, NodeEntry>(StringComparer.Ordinal),
+            ImmutableSortedDictionary<Position, string>.Empty,
+            ImmutableDictionary<EdgeKey, EdgeEntry>.Empty,
+            ImmutableDictionary.Create<string, ImmutableSortedDictionary<Position, EdgeKey>>(StringComparer.Ordinal),
+            ImmutableDictionary.Create<string, ImmutableSortedDictionary<Position, EdgeKey>>(StringComparer.Ordinal),
+            ImmutableDictionary.Create<string, ImmutableSortedDictionary<Position, string>>(StringComparer.Ordinal),
+            ImmutableDictionary<(string ProjectKey, string Path), GraphDocumentRecord>.Empty,
+            0,
+            false,
+            null,
+            null);
+    }
+
+    private volatile State _state;
+
+    public GraphStore()
+        : this(State.Empty)
+    {
+    }
+
+    private GraphStore(State state)
+    {
+        _state = state;
+    }
+
+    public int NodeCount => _state.Nodes.Count;
+    public int EdgeCount => _state.Edges.Count;
+
+    internal bool HasProvenance => _state.HasProvenance;
+    internal string? Revision => _state.Revision;
+    internal GraphBaseline? Baseline => _state.Baseline;
+
+    internal IReadOnlyDictionary<(string ProjectKey, string Path), GraphDocumentRecord> Documents => _state.Documents;
 
     public void AddNode(GraphNode node)
     {
-        // Route to staging when a rebuild is active; otherwise mutate the live _state.
-        // Direct mutation of _state (no rebuild) is reserved for programmatic/test builds,
-        // which are single-threaded by contract — concurrent rebuilds go through BeginRebuild.
-        AddNode(_staging ?? _state, node);
+        var mutation = new Mutation(_state);
+        mutation.TouchAdHoc(node);
+        _state = mutation.ToState();
     }
 
     public void AddEdge(GraphEdge edge)
     {
-        AddEdge(_staging ?? _state, edge);
+        var mutation = new Mutation(_state);
+        mutation.AddAdHocEdge(edge);
+        _state = mutation.ToState();
     }
 
-    public bool TryGetNode(string id, out GraphNode? node) => _state.NodeById.TryGetValue(id, out node);
-
-    /// <summary>
-    /// Acquires the writer lock and starts a fresh staging graph. Callers MUST pair this with
-    /// <see cref="CommitRebuild"/> (success) or <see cref="AbortRebuild"/> (failure). AddNode/AddEdge
-    /// invoked while a rebuild is active mutate the staging graph, leaving the published
-    /// <c>_state</c> untouched until CommitRebuild publishes the new snapshot.
-    /// </summary>
-    public void BeginRebuild()
+    public bool TryGetNode(string id, out GraphNode? node)
     {
-        _rebuildLock.Wait();
-        _staging = new State();
-    }
-
-    public async Task BeginRebuildAsync(CancellationToken ct = default)
-    {
-        await _rebuildLock.WaitAsync(ct);
-        _staging = new State();
+        node = NodeOf(_state, id);
+        return node is not null;
     }
 
     /// <summary>
-    /// Publishes the staging graph atomically and releases the writer lock. Concurrent readers
-    /// switch to the new snapshot on their next capture; the previous snapshot stays intact.
-    /// No-op (and does not release the lock) if no rebuild is in progress.
+    /// Returns a detached store bound to the current snapshot. Every query on the returned store
+    /// reads the same graph revision, even if a later update is published on this store.
     /// </summary>
-    public void CommitRebuild()
-    {
-        var staging = _staging;
-        if (staging is null)
-            return;
-
-        _staging = null;
-        _state = staging; // volatile publish — readers acquire the new snapshot on next read
-        _rebuildLock.Release();
-    }
+    public GraphStore Capture() => new(_state);
 
     /// <summary>
-    /// Discards the staging graph without publishing and releases the writer lock. Use when a
-    /// rebuild (GraphBuilder.BuildWithReportAsync) fails partway through, so the previous graph is preserved
-    /// and the lock is not leaked (which would deadlock the next scan).
+    /// Prepares a candidate graph by applying a document-contribution delta to the current snapshot
+    /// (or to an empty graph when <paramref name="fromEmpty"/> is true). Removed and replaced
+    /// documents give up their ownership of nodes and edges; a node or edge disappears only when no
+    /// surviving contribution owns it. Nothing is published: pass the candidate to
+    /// <see cref="Publish"/> once it has been persisted.
     /// </summary>
-    public void AbortRebuild()
+    public GraphStore Stage(
+        IReadOnlyCollection<(string ProjectKey, string Path)> removedDocuments,
+        IReadOnlyCollection<GraphDocumentRecord> upsertedDocuments,
+        GraphBaseline baseline,
+        bool fromEmpty)
     {
-        var staging = _staging;
-        if (staging is null)
-            return;
+        var mutation = new Mutation(fromEmpty ? State.Empty : _state);
+        foreach (var key in removedDocuments)
+            mutation.RemoveDocument(key);
 
-        _staging = null;
-        _rebuildLock.Release();
+        foreach (var record in upsertedDocuments)
+            mutation.RemoveDocument(record.Key);
+
+        foreach (var record in upsertedDocuments)
+            mutation.AddDocument(record);
+
+        return new GraphStore(mutation.ToState() with
+        {
+            HasProvenance = true,
+            Revision = Guid.NewGuid().ToString("N"),
+            Baseline = baseline
+        });
+    }
+
+    public void Publish(GraphStore candidate)
+    {
+        _state = candidate._state;
     }
 
     /// <summary>
@@ -108,38 +170,37 @@ public class GraphStore
     public IReadOnlyList<GraphNeighbor> GetAggregatedNeighbors(string nodeId, CancellationToken ct = default)
     {
         var s = _state;
-        if (!s.NodeById.TryGetValue(nodeId, out var node))
+        if (!s.Nodes.ContainsKey(nodeId))
             return [];
 
-        var graph = s.Graph;
-        var scope = new List<GraphNode> { node! };
-        if (!IsMemberNode(s, node!))
-            scope.AddRange(GetContainedMembers(s, node!));
+        var scope = new List<string> { nodeId };
+        if (!IsMemberNode(s, nodeId))
+            scope.AddRange(GetContainedMembers(s, nodeId));
 
-        var scopeSet = new HashSet<GraphNode>(scope);
-        var entries = new List<(string Id, string Kind, string Direction, Dictionary<string, int> EdgeKinds)>();
+        var scopeSet = new HashSet<string>(scope, StringComparer.Ordinal);
+        var entries = new List<(GraphNode Node, string Direction, Dictionary<string, int> EdgeKinds)>();
         var indexByKey = new Dictionary<(string Id, string Direction), int>();
 
-        void Accumulate(GraphNode neighbor, string edgeType, string direction)
+        void Accumulate(string neighborId, string edgeType, string direction)
         {
-            var rolled = IsMemberNode(s, neighbor) ? GetDeclaringType(s, neighbor) ?? neighbor : neighbor;
-            var key = (rolled.Id, direction);
+            var rolledId = IsMemberNode(s, neighborId) ? GetDeclaringTypeId(s, neighborId) ?? neighborId : neighborId;
+            var key = (rolledId, direction);
 
             if (!indexByKey.TryGetValue(key, out var idx))
             {
                 idx = entries.Count;
                 indexByKey[key] = idx;
-                entries.Add((rolled.Id, rolled.Kind, direction, new Dictionary<string, int>(StringComparer.Ordinal)));
+                entries.Add((NodeOf(s, rolledId)!, direction, new Dictionary<string, int>(StringComparer.Ordinal)));
             }
 
             var kinds = entries[idx].EdgeKinds;
             kinds[edgeType] = kinds.TryGetValue(edgeType, out var count) ? count + 1 : 1;
         }
 
-        foreach (var scopeNode in scope)
+        foreach (var scopeId in scope)
         {
             ct.ThrowIfCancellationRequested();
-            foreach (var edge in graph.OutEdges(scopeNode))
+            foreach (var edge in OutEdges(s, scopeId))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Target))
                     continue;
@@ -148,10 +209,10 @@ public class GraphStore
             }
         }
 
-        foreach (var scopeNode in scope)
+        foreach (var scopeId in scope)
         {
             ct.ThrowIfCancellationRequested();
-            foreach (var edge in graph.InEdges(scopeNode))
+            foreach (var edge in InEdges(s, scopeId))
             {
                 if (edge.Type == "CONTAINS" || scopeSet.Contains(edge.Source))
                     continue;
@@ -161,7 +222,7 @@ public class GraphStore
         }
 
         return entries
-            .Select(e => new GraphNeighbor(e.Id, e.Kind, e.Direction, e.EdgeKinds))
+            .Select(e => new GraphNeighbor(e.Node.Id, e.Node.Kind, e.Direction, e.EdgeKinds, e.Node.File))
             .ToList();
     }
 
@@ -172,22 +233,21 @@ public class GraphStore
     public IReadOnlyList<string> BfsBackward(string nodeId, IReadOnlySet<string> edgeTypes, CancellationToken ct = default)
     {
         var s = _state;
-        if (!s.NodeById.TryGetValue(nodeId, out var startNode))
+        if (!s.Nodes.ContainsKey(nodeId))
             return [];
 
-        var graph = s.Graph;
-        var visited = new HashSet<GraphNode> { startNode };
-        var queue = new Queue<GraphNode>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { nodeId };
+        var queue = new Queue<string>();
         var result = new List<string>();
 
-        queue.Enqueue(startNode);
+        queue.Enqueue(nodeId);
 
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
             ct.ThrowIfCancellationRequested();
 
-            foreach (var edge in graph.InEdges(current))
+            foreach (var edge in InEdges(s, current))
             {
                 if (!edgeTypes.Contains(edge.Type))
                     continue;
@@ -195,7 +255,7 @@ public class GraphStore
                 if (!visited.Add(edge.Source))
                     continue;
 
-                result.Add(edge.Source.Id);
+                result.Add(edge.Source);
                 queue.Enqueue(edge.Source);
             }
         }
@@ -255,31 +315,30 @@ public class GraphStore
         CancellationToken ct = default)
     {
         var s = _state;
-        if (!s.NodeById.TryGetValue(nodeId, out var startNode))
+        if (!s.Nodes.ContainsKey(nodeId))
         {
             truncated = false;
             bridgedInterfaceIds = [];
             return [];
         }
 
-        var graph = s.Graph;
         var bridged = new List<string>();
         var hitCap = false;
 
         // Build seed: start node + its members + implemented interfaces + their members.
-        var seeds = new List<GraphNode> { startNode };
-        seeds.AddRange(GetContainedMembers(s, startNode));
+        var seeds = new List<string> { nodeId };
+        seeds.AddRange(GetContainedMembers(s, nodeId));
 
-        foreach (var iface in GetImplementedInterfaces(graph, startNode))
+        foreach (var iface in GetImplementedInterfaces(s, nodeId))
         {
             seeds.Add(iface);
             seeds.AddRange(GetContainedMembers(s, iface));
-            bridged.Add(iface.Id);
+            bridged.Add(iface);
         }
 
-        var seedIds = new HashSet<string>(seeds.Select(n => n.Id), StringComparer.Ordinal);
-        var visited = new HashSet<GraphNode>(seeds);
-        var queue = new Queue<GraphNode>(seeds);
+        var seedIds = new HashSet<string>(seeds, StringComparer.Ordinal);
+        var visited = new HashSet<string>(seeds, StringComparer.Ordinal);
+        var queue = new Queue<string>(seeds);
         var reportedTypes = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<string>();
 
@@ -305,21 +364,21 @@ public class GraphStore
             // Apply interface bridging to every concrete class dequeued — not only the seed.
             // Enqueue bridged interfaces and their members so inbound INJECTS on those interfaces
             // are followed. The shared visited set guarantees cycle safety and dedup.
-            foreach (var iface in GetImplementedInterfaces(graph, current))
+            foreach (var iface in GetImplementedInterfaces(s, current))
             {
                 if (!visited.Add(iface))
                     continue;
 
                 queue.Enqueue(iface);
-                seedIds.Add(iface.Id);
-                bridged.Add(iface.Id);
+                seedIds.Add(iface);
+                bridged.Add(iface);
 
                 foreach (var member in GetContainedMembers(s, iface))
                 {
                     if (visited.Add(member))
                     {
                         queue.Enqueue(member);
-                        seedIds.Add(member.Id);
+                        seedIds.Add(member);
                     }
                 }
             }
@@ -329,7 +388,7 @@ public class GraphStore
             // the result (rolled up if a member) AND are enqueued for full transitive reach.
             // Unlike bridged interfaces, implementors are NOT added to seedIds/bridged, so the
             // reflection diagnostic and result-vs-routing distinction are preserved.
-            foreach (var implementor in GetImplementors(graph, current))
+            foreach (var implementor in GetImplementors(s, current))
             {
                 if (!visited.Add(implementor))
                     continue;
@@ -337,13 +396,13 @@ public class GraphStore
                 queue.Enqueue(implementor);
 
                 var reportId = IsMemberNode(s, implementor)
-                    ? GetDeclaringType(s, implementor)?.Id ?? implementor.Id
-                    : implementor.Id;
+                    ? GetDeclaringTypeId(s, implementor) ?? implementor
+                    : implementor;
 
                 Record(reportId);
             }
 
-            foreach (var edge in graph.InEdges(current))
+            foreach (var edge in InEdges(s, current))
             {
                 if (!edgeTypes.Contains(edge.Type))
                     continue;
@@ -355,8 +414,8 @@ public class GraphStore
 
                 queue.Enqueue(caller);
 
-                var owner = IsMemberNode(s, caller) ? GetDeclaringType(s, caller) : null;
-                var reportId = owner?.Id ?? caller.Id;
+                var owner = IsMemberNode(s, caller) ? GetDeclaringTypeId(s, caller) : null;
+                var reportId = owner ?? caller;
 
                 Record(reportId);
 
@@ -375,45 +434,83 @@ public class GraphStore
     /// (outbound <c>IMPLEMENTS</c> edges). Returns empty if the node is unknown or
     /// has no outbound IMPLEMENTS edges.
     /// </summary>
-    public IReadOnlyList<string> GetImplementedInterfaceIds(string nodeId)
+    public IReadOnlyList<string> GetImplementedInterfaceIds(string nodeId) =>
+        GetImplementedInterfaces(_state, nodeId).ToList();
+
+    /// <summary>
+    /// Returns the type nodes (Class, Interface, Record) whose ID matches a short or qualified type
+    /// name once generic argument lists are ignored: the full ID itself, or any ID ending with
+    /// <c>.</c> plus the name. Matches are returned in graph-encounter order.
+    /// </summary>
+    public IReadOnlyList<GraphNode> TryGetShortNameMatches(string shortOrFullTypeName)
     {
         var s = _state;
-        if (!s.NodeById.TryGetValue(nodeId, out var node))
+        var name = StripGenericArguments(shortOrFullTypeName.Trim());
+        if (name.Length == 0)
             return [];
 
-        return s.Graph.OutEdges(node)
-                     .Where(e => e.Type == "IMPLEMENTS")
-                     .Select(e => e.Target.Id)
-                     .ToList();
+        var suffix = "." + name;
+        return s.NodeOrder.Values
+            .Select(id => s.Nodes[id].Node)
+            .Where(n => NodeClassifier.IsTypeKind(n.Kind))
+            .Where(n =>
+            {
+                var id = StripGenericArguments(n.Id);
+                return id == name || id.EndsWith(suffix, StringComparison.Ordinal);
+            })
+            .ToList();
+    }
+
+    private static string StripGenericArguments(string name)
+    {
+        var builder = new System.Text.StringBuilder(name.Length);
+        var depth = 0;
+        foreach (var c in name)
+        {
+            if (c == '<')
+                depth++;
+            else if (c == '>')
+                depth--;
+            else if (depth == 0)
+                builder.Append(c);
+        }
+
+        return builder.ToString();
     }
 
     // Returns all nodes connected via outbound CONTAINS edges (the direct members of a type).
-    private static IEnumerable<GraphNode> GetContainedMembers(
-        State state, GraphNode typeNode) =>
-        state.MembersByOwnerId.TryGetValue(typeNode.Id, out var members) ? members : [];
+    private static IEnumerable<string> GetContainedMembers(State state, string typeId) =>
+        OutEdges(state, typeId)
+            .Where(e => e.Type == "CONTAINS" && GetDeclaringTypeId(state, e.Target) == typeId)
+            .Select(e => e.Target);
 
     // Returns all nodes connected via outbound IMPLEMENTS edges.
-    private static IEnumerable<GraphNode> GetImplementedInterfaces(
-        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
-        graph.OutEdges(typeNode)
-              .Where(e => e.Type == "IMPLEMENTS")
-              .Select(e => e.Target);
+    private static IEnumerable<string> GetImplementedInterfaces(State state, string typeId) =>
+        OutEdges(state, typeId)
+            .Where(e => e.Type == "IMPLEMENTS")
+            .Select(e => e.Target);
 
     // Returns all nodes connected via inbound IMPLEMENTS edges (the classes that implement a type).
-    private static IEnumerable<GraphNode> GetImplementors(
-        BidirectionalGraph<GraphNode, GraphEdge> graph, GraphNode typeNode) =>
-        graph.InEdges(typeNode)
-              .Where(e => e.Type == "IMPLEMENTS")
-              .Select(e => e.Source);
+    private static IEnumerable<string> GetImplementors(State state, string typeId) =>
+        InEdges(state, typeId)
+            .Where(e => e.Type == "IMPLEMENTS")
+            .Select(e => e.Source);
 
     // A node is a member if it has at least one inbound CONTAINS edge.
-    private static bool IsMemberNode(
-        State state, GraphNode node) => state.OwnerByMemberId.ContainsKey(node.Id);
+    private static bool IsMemberNode(State state, string nodeId) => state.OwnersByMember.ContainsKey(nodeId);
 
     // Returns the declaring type of a member node via its inbound CONTAINS edge.
-    private static GraphNode? GetDeclaringType(
-        State state, GraphNode memberNode) =>
-        state.OwnerByMemberId.GetValueOrDefault(memberNode.Id);
+    private static string? GetDeclaringTypeId(State state, string memberId) =>
+        state.OwnersByMember.TryGetValue(memberId, out var owners) ? owners.First().Value : null;
+
+    private static GraphNode? NodeOf(State state, string id) =>
+        state.Nodes.TryGetValue(id, out var entry) ? entry.Node : null;
+
+    private static IEnumerable<EdgeKey> OutEdges(State state, string id) =>
+        state.Out.TryGetValue(id, out var edges) ? edges.Values : [];
+
+    private static IEnumerable<EdgeKey> InEdges(State state, string id) =>
+        state.In.TryGetValue(id, out var edges) ? edges.Values : [];
 
     /// <summary>
     /// Given a set of interface node IDs, returns those IDs for which no inbound
@@ -428,14 +525,10 @@ public class GraphStore
 
         foreach (var id in interfaceIds)
         {
-            if (!s.NodeById.TryGetValue(id, out var node))
+            if (NodeOf(s, id) is not { Kind: "Interface" })
                 continue;
 
-            if (node.Kind != "Interface")
-                continue;
-
-            var hasImplementation = s.Graph.InEdges(node).Any(e => e.Type == "IMPLEMENTS");
-            if (!hasImplementation)
+            if (!GetImplementors(s, id).Any())
                 result.Add(id);
         }
 
@@ -449,33 +542,30 @@ public class GraphStore
     public IReadOnlyList<string> ShortestPath(string sourceId, string targetId, CancellationToken ct = default)
     {
         var s = _state;
-        if (!s.NodeById.TryGetValue(sourceId, out var sourceNode))
+        if (!s.Nodes.ContainsKey(sourceId) || !s.Nodes.ContainsKey(targetId))
             return [];
 
-        if (!s.NodeById.TryGetValue(targetId, out var targetNode))
-            return [];
-
-        if (sourceNode.Equals(targetNode))
+        if (sourceId == targetId)
             return [sourceId];
 
-        var queue = new Queue<GraphNode>();
-        var visited = new HashSet<GraphNode> { sourceNode };
-        var previous = new Dictionary<GraphNode, GraphNode>();
-        queue.Enqueue(sourceNode);
+        var queue = new Queue<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { sourceId };
+        var previous = new Dictionary<string, string>(StringComparer.Ordinal);
+        queue.Enqueue(sourceId);
 
         while (queue.Count > 0)
         {
             ct.ThrowIfCancellationRequested();
             var current = queue.Dequeue();
 
-            foreach (var edge in s.Graph.OutEdges(current))
+            foreach (var edge in OutEdges(s, current))
             {
                 if (!visited.Add(edge.Target))
                     continue;
 
                 previous[edge.Target] = current;
-                if (edge.Target.Equals(targetNode))
-                    return BuildPath(sourceNode, targetNode, previous);
+                if (edge.Target == targetId)
+                    return BuildPath(sourceId, targetId, previous);
 
                 queue.Enqueue(edge.Target);
             }
@@ -485,115 +575,284 @@ public class GraphStore
     }
 
     /// <summary>
-    /// Serializes the graph to JSON: <c>{ "nodes": [...], "edges": [...] }</c>.
+    /// Serializes the graph to JSON: <c>{ "revision", "nodes": [...], "edges": [...] }</c>, plus the
+    /// per-document contributions and synchronization baseline when the graph carries provenance.
     /// Uses the shared <see cref="AnalysisJson"/> options for consistency with the MCP tools.
     /// </summary>
     public string Serialize()
     {
-        return Serialize(_state);
-    }
-
-    internal string SerializeRebuild()
-    {
-        return Serialize(_staging ?? throw new InvalidOperationException("No rebuild is active."));
-    }
-
-    private static string Serialize(State s)
-    {
+        var s = _state;
+        var nodes = s.NodeOrder.Values.Select(id => s.Nodes[id].Node).ToList();
         var payload = new GraphPayload(
-            Nodes: s.Graph.Vertices.Select(n => new NodeDto(n.Id, n.Kind)).ToList(),
-            Edges: s.Graph.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList());
+            Revision: s.Revision,
+            Nodes: nodes.Select(n => new NodeDto(n.Id, n.Kind, n.File)).ToList(),
+            Edges: nodes.SelectMany(n => OutEdges(s, n.Id)).Select(e => new EdgeDto(e.Source, e.Target, e.Type)).ToList(),
+            Documents: s.HasProvenance
+                ? s.Documents.Values
+                    .OrderBy(d => d.ProjectOrder)
+                    .ThenBy(d => d.DocumentOrder)
+                    .Select(d => new DocumentDto(
+                        d.ProjectKey,
+                        d.Path,
+                        d.Checksum,
+                        d.ProjectOrder,
+                        d.DocumentOrder,
+                        d.Nodes.Select(n => n.Id).ToList(),
+                        d.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList()))
+                    .ToList()
+                : null,
+            Baseline: s.HasProvenance ? s.Baseline : null);
 
         return JsonSerializer.Serialize(payload, AnalysisJson.Options);
     }
 
     /// <summary>
     /// Replaces the current in-memory graph with the one deserialized from <paramref name="json"/>.
-    /// Builds into a fresh local State and publishes it atomically; on any throw the previous
-    /// graph is left untouched (no half-cleared store).
+    /// A payload with document contributions is rebuilt from them and keeps its provenance; a legacy
+    /// payload with only nodes and edges stays queryable but carries no provenance. Builds a fresh
+    /// snapshot and publishes it atomically; on any throw the previous graph is left untouched.
     /// </summary>
     public void Deserialize(string json)
     {
         var payload = JsonSerializer.Deserialize<GraphPayload>(json, AnalysisJson.Options)
             ?? throw new JsonException("Graph payload deserialized to null.");
 
-        var newState = new State();
-
+        var nodeById = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
         foreach (var n in payload.Nodes)
-        {
-            AddNode(newState, new GraphNode(n.Id, n.Kind));
-        }
+            nodeById.TryAdd(n.Id, new GraphNode(n.Id, n.Kind, n.File));
 
-        foreach (var e in payload.Edges)
+        var mutation = new Mutation(State.Empty);
+        if (payload.Documents is null)
         {
-            if (newState.NodeById.TryGetValue(e.Source, out var src) &&
-                newState.NodeById.TryGetValue(e.Target, out var tgt))
+            foreach (var node in nodeById.Values)
+                mutation.TouchAdHoc(node);
+
+            foreach (var e in payload.Edges)
             {
-                AddEdge(newState, new GraphEdge(src, tgt, e.Type));
+                if (nodeById.TryGetValue(e.Source, out var src) && nodeById.TryGetValue(e.Target, out var tgt))
+                    mutation.AddAdHocEdge(new GraphEdge(src, tgt, e.Type));
             }
+
+            _state = mutation.ToState() with { Revision = payload.Revision };
+            return;
         }
 
-        _state = newState; // atomic publish
+        foreach (var d in payload.Documents)
+        {
+            mutation.AddDocument(new GraphDocumentRecord(
+                d.Project,
+                d.Path,
+                d.Checksum,
+                d.ProjectOrder,
+                d.DocumentOrder,
+                d.Nodes.Where(nodeById.ContainsKey).Select(id => nodeById[id]).ToList(),
+                d.Edges
+                    .Where(e => nodeById.ContainsKey(e.Source) && nodeById.ContainsKey(e.Target))
+                    .Select(e => new GraphEdge(nodeById[e.Source], nodeById[e.Target], e.Type))
+                    .ToList()));
+        }
+
+        _state = mutation.ToState() with
+        {
+            HasProvenance = true,
+            Revision = payload.Revision,
+            Baseline = payload.Baseline
+        };
     }
 
     public void Clear()
     {
-        _staging = null;
-        _state = new State();
-    }
-
-    private static void AddNode(State state, GraphNode node)
-    {
-        if (!state.NodeById.TryAdd(node.Id, node))
-            return;
-
-        state.Graph.AddVertex(node);
-    }
-
-    private static void AddEdge(State state, GraphEdge edge)
-    {
-        AddNode(state, edge.Source);
-        AddNode(state, edge.Target);
-
-        var source = state.NodeById[edge.Source.Id];
-        var target = state.NodeById[edge.Target.Id];
-        if (!state.EdgeKeys.Add((source.Id, target.Id, edge.Type)))
-            return;
-
-        state.Graph.AddEdge(new GraphEdge(source, target, edge.Type));
-
-        if (edge.Type != "CONTAINS" || state.OwnerByMemberId.ContainsKey(target.Id))
-            return;
-
-        state.OwnerByMemberId[target.Id] = source;
-        if (!state.MembersByOwnerId.TryGetValue(source.Id, out var members))
-        {
-            members = [];
-            state.MembersByOwnerId[source.Id] = members;
-        }
-
-        members.Add(target);
+        _state = State.Empty;
     }
 
     private static IReadOnlyList<string> BuildPath(
-        GraphNode source,
-        GraphNode target,
-        IReadOnlyDictionary<GraphNode, GraphNode> previous)
+        string source,
+        string target,
+        IReadOnlyDictionary<string, string> previous)
     {
-        var path = new List<string> { target.Id };
+        var path = new List<string> { target };
         var current = target;
-        while (!current.Equals(source))
+        while (current != source)
         {
             current = previous[current];
-            path.Add(current.Id);
+            path.Add(current);
         }
 
         path.Reverse();
         return path;
     }
 
+    private sealed class Mutation
+    {
+        private readonly State _origin;
+        private readonly ImmutableDictionary<string, NodeEntry>.Builder _nodes;
+        private readonly ImmutableSortedDictionary<Position, string>.Builder _nodeOrder;
+        private readonly ImmutableDictionary<EdgeKey, EdgeEntry>.Builder _edges;
+        private readonly ImmutableDictionary<string, ImmutableSortedDictionary<Position, EdgeKey>>.Builder _out;
+        private readonly ImmutableDictionary<string, ImmutableSortedDictionary<Position, EdgeKey>>.Builder _in;
+        private readonly ImmutableDictionary<string, ImmutableSortedDictionary<Position, string>>.Builder _ownersByMember;
+        private readonly ImmutableDictionary<(string ProjectKey, string Path), GraphDocumentRecord>.Builder _documents;
+        private int _nextAdHocPosition;
+
+        public Mutation(State origin)
+        {
+            _origin = origin;
+            _nodes = origin.Nodes.ToBuilder();
+            _nodeOrder = origin.NodeOrder.ToBuilder();
+            _edges = origin.Edges.ToBuilder();
+            _out = origin.Out.ToBuilder();
+            _in = origin.In.ToBuilder();
+            _ownersByMember = origin.OwnersByMember.ToBuilder();
+            _documents = origin.Documents.ToBuilder();
+            _nextAdHocPosition = origin.NextAdHocPosition;
+        }
+
+        public State ToState() => _origin with
+        {
+            Nodes = _nodes.ToImmutable(),
+            NodeOrder = _nodeOrder.ToImmutable(),
+            Edges = _edges.ToImmutable(),
+            Out = _out.ToImmutable(),
+            In = _in.ToImmutable(),
+            OwnersByMember = _ownersByMember.ToImmutable(),
+            Documents = _documents.ToImmutable(),
+            NextAdHocPosition = _nextAdHocPosition
+        };
+
+        public void TouchAdHoc(GraphNode node) => Touch(node, NextAdHoc(), declared: true, add: true);
+
+        public void AddAdHocEdge(GraphEdge edge)
+        {
+            Touch(edge.Source, NextAdHoc(), declared: false, add: true);
+            Touch(edge.Target, NextAdHoc(), declared: false, add: true);
+            ChangeEdgeOwner(new EdgeKey(edge.Source.Id, edge.Target.Id, edge.Type), NextAdHoc(), add: true);
+        }
+
+        public void AddDocument(GraphDocumentRecord record)
+        {
+            _documents[record.Key] = record;
+            Visit(record, add: true);
+        }
+
+        public void RemoveDocument((string ProjectKey, string Path) key)
+        {
+            if (!_documents.TryGetValue(key, out var record))
+                return;
+
+            _documents.Remove(key);
+            Visit(record, add: false);
+        }
+
+        private Position NextAdHoc() => new(int.MaxValue, int.MaxValue, _nextAdHocPosition++);
+
+        private void Visit(GraphDocumentRecord record, bool add)
+        {
+            var local = 0;
+            Position Next() => new(record.ProjectOrder, record.DocumentOrder, local++);
+
+            foreach (var node in record.Nodes)
+                Touch(node, Next(), declared: true, add);
+
+            foreach (var edge in record.Edges)
+            {
+                Touch(edge.Source, Next(), declared: false, add);
+                Touch(edge.Target, Next(), declared: false, add);
+                ChangeEdgeOwner(new EdgeKey(edge.Source.Id, edge.Target.Id, edge.Type), Next(), add);
+            }
+        }
+
+        private void Touch(GraphNode node, Position position, bool declared, bool add)
+        {
+            var existing = _nodes.GetValueOrDefault(node.Id);
+            var declarations = existing?.Declarations ?? ImmutableSortedDictionary<Position, GraphNode>.Empty;
+            var references = existing?.References ?? ImmutableSortedDictionary<Position, GraphNode>.Empty;
+
+            if (declared)
+                declarations = add ? declarations.SetItem(position, node) : declarations.Remove(position);
+            else
+                references = add ? references.SetItem(position, node) : references.Remove(position);
+
+            if (existing is not null)
+                _nodeOrder.Remove(existing.First);
+
+            if (declarations.IsEmpty && references.IsEmpty)
+            {
+                _nodes.Remove(node.Id);
+                return;
+            }
+
+            var updated = new NodeEntry(declarations, references);
+            _nodes[node.Id] = updated;
+            _nodeOrder[updated.First] = node.Id;
+        }
+
+        private void ChangeEdgeOwner(EdgeKey key, Position position, bool add)
+        {
+            var existing = _edges.GetValueOrDefault(key);
+            var owners = existing?.Owners ?? ImmutableSortedSet<Position>.Empty;
+            owners = add ? owners.Add(position) : owners.Remove(position);
+
+            if (existing is not null)
+                Unlink(key, existing.First);
+
+            if (owners.IsEmpty)
+            {
+                _edges.Remove(key);
+                return;
+            }
+
+            var updated = new EdgeEntry(owners);
+            _edges[key] = updated;
+            Link(key, updated.First);
+        }
+
+        private void Link(EdgeKey key, Position position)
+        {
+            _out[key.Source] = _out.GetValueOrDefault(key.Source, ImmutableSortedDictionary<Position, EdgeKey>.Empty).SetItem(position, key);
+            _in[key.Target] = _in.GetValueOrDefault(key.Target, ImmutableSortedDictionary<Position, EdgeKey>.Empty).SetItem(position, key);
+            if (key.Type == "CONTAINS")
+                _ownersByMember[key.Target] = _ownersByMember.GetValueOrDefault(key.Target, ImmutableSortedDictionary<Position, string>.Empty).SetItem(position, key.Source);
+        }
+
+        private void Unlink(EdgeKey key, Position position)
+        {
+            Shrink(_out, key.Source, position);
+            Shrink(_in, key.Target, position);
+            if (key.Type == "CONTAINS")
+                Shrink(_ownersByMember, key.Target, position);
+        }
+
+        private static void Shrink<T>(
+            ImmutableDictionary<string, ImmutableSortedDictionary<Position, T>>.Builder index,
+            string id,
+            Position position)
+        {
+            if (!index.TryGetValue(id, out var entries))
+                return;
+
+            var remaining = entries.Remove(position);
+            if (remaining.IsEmpty)
+                index.Remove(id);
+            else
+                index[id] = remaining;
+        }
+    }
+
     // Private DTOs used only for serialization — never exposed outside this class.
-    private sealed record GraphPayload(List<NodeDto> Nodes, List<EdgeDto> Edges);
-    private sealed record NodeDto(string Id, string Kind);
+    private sealed record GraphPayload(
+        string? Revision,
+        List<NodeDto> Nodes,
+        List<EdgeDto> Edges,
+        List<DocumentDto>? Documents = null,
+        GraphBaseline? Baseline = null);
+    private sealed record NodeDto(string Id, string Kind, string? File = null);
     private sealed record EdgeDto(string Source, string Target, string Type);
+    private sealed record DocumentDto(
+        string Project,
+        string Path,
+        string Checksum,
+        int ProjectOrder,
+        int DocumentOrder,
+        List<string> Nodes,
+        List<EdgeDto> Edges);
 }

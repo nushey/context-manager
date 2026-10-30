@@ -18,7 +18,9 @@ internal static class NodeClassifier
         _ => null
     };
 
-    public static GraphNode? NodeFor(ISymbol symbol)
+    public static bool IsTypeKind(string kind) => kind is "Interface" or "Record" or "Class";
+
+    public static GraphNode? NodeFor(ISymbol symbol, string? fallbackFilePath = null)
     {
         symbol = Canonicalize(symbol);
         var kind = symbol switch
@@ -29,7 +31,16 @@ internal static class NodeClassifier
             _ => null
         };
 
-        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind);
+        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind, DeclaringFile(symbol, fallbackFilePath));
+    }
+
+    private static string? DeclaringFile(ISymbol symbol, string? fallbackFilePath)
+    {
+        var path = symbol.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
+        if (string.IsNullOrEmpty(path))
+            path = fallbackFilePath;
+
+        return string.IsNullOrEmpty(path) ? null : Path.GetFullPath(path);
     }
 
     public static ISymbol Canonicalize(ISymbol symbol) => symbol switch

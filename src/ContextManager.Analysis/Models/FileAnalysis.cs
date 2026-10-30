@@ -5,4 +5,5 @@ public sealed record FileAnalysis(
     string? Namespace,
     IReadOnlyList<string> Usings,
     IReadOnlyList<TypeInfo> Types,
-    IReadOnlyList<string>? ParseErrors = null);
+    IReadOnlyList<string>? ParseErrors = null,
+    string? GraphStatus = null);

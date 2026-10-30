@@ -324,7 +324,7 @@ public class EdgeExtractor
         HashSet<(string, string, string)> seen,
         List<GraphEdge> edges)
     {
-        var invokedNode = NodeClassifier.NodeFor(invokedSymbol);
+        var invokedNode = invokedSymbol.MethodKind == MethodKind.LocalFunction ? null : NodeClassifier.NodeFor(invokedSymbol);
         if (invokedNode is not null)
             AddEdge(sourceNode, invokedNode, "CALLS", seen, edges);
 

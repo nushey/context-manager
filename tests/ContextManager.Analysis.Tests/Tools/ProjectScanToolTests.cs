@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Reflection;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
@@ -10,12 +9,15 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace ContextManager.Analysis.Tests.Tools;
 
 [TestClass]
-public class ProjectScanToolTests
+public class ProjectScanToolTests : FixtureTest
 {
-    private static ProjectScanTool CreateTool()
+    private ProjectScanTool CreateTool(GraphRegistry? registry = null, Func<string, string, CancellationToken, Task>? writeFile = null)
     {
-        return new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), new GraphRegistry());
+        writeFile ??= GraphRegistry.WriteAtomicallyAsync;
+        return new ProjectScanTool(CreateSynchronizer(registry ?? new GraphRegistry(), writeFile), writeFile);
     }
+
+    private string CopyCoverageSolution() => Path.Combine(CopyFixture("ScanFixtures"), "Coverage.sln");
 
     [TestMethod]
     public async Task ProjectScanAsync_NonSlnPath_ReturnsInvalidSolutionPathError()
@@ -43,70 +45,32 @@ public class ProjectScanToolTests
         Assert.AreEqual(missing, error.FilePath);
     }
 
+    private string CopyIncrementalSolution() => Path.Combine(CopyFixture("GraphFixtures", "IncrementalFixtures"), "Incremental.sln");
+
     [TestMethod]
     [Timeout(120_000)]
     public async Task ProjectScanAsync_ValidSolution_ReturnsSummaryAndWritesGraphJson()
     {
-        var solutionPath = FindRepoSolutionPath();
-        var graphJsonPath = Path.Combine(Path.GetTempPath(), $"context-manager-{Guid.NewGuid():N}.json");
-        var tool = new ProjectScanTool(
-            new GraphBuilder(new EdgeExtractor()),
-            new GraphRegistry(),
-            (path, json, token) => path.EndsWith("graph.json")
-                ? File.WriteAllTextAsync(graphJsonPath, json, token)
-                : Task.CompletedTask);
+        var solutionPath = CopyIncrementalSolution();
 
-        var result = await tool.ProjectScanAsync(solutionPath);
+        var result = await CreateTool().ProjectScanAsync(solutionPath);
 
-        // Must match "Scan complete. N nodes, M edges." format.
-        Assert.IsTrue(
-            Regex.IsMatch(result, @"^Scan (complete|partial)\. \d+ nodes, \d+ edges\. Coverage:"),
-            $"Unexpected result: {result}");
-
-        // NodeCount must be > 0 (we scanned a real solution with C# files).
-        Assert.IsTrue(
-            ExtractNodeCount(result) > 0,
-            $"Expected at least one node, got: {result}");
-
-        // graph.json must have been written to disk.
-        Assert.IsTrue(File.Exists(graphJsonPath), $"Expected graph.json at: {graphJsonPath}");
-
-        // graph.json must not be empty.
-        var written = await File.ReadAllTextAsync(graphJsonPath);
-        Assert.IsFalse(string.IsNullOrWhiteSpace(written), "graph.json is empty.");
-        File.Delete(graphJsonPath);
-    }
-
-    private static string FindRepoSolutionPath()
-    {
-        // Resolve solution path relative to this assembly's location, walking up to the repo root.
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
-        {
-            var sln = directory.GetFiles("*.sln").FirstOrDefault();
-            if (sln is not null)
-                return sln.FullName;
-
-            directory = directory.Parent;
-        }
-
-        throw new InvalidOperationException("Could not locate a .sln file from the test output directory.");
-    }
-
-    private static int ExtractNodeCount(string summary)
-    {
-        var match = Regex.Match(summary, @"(\d+) nodes");
-        return match.Success ? int.Parse(match.Groups[1].Value) : 0;
+        StringAssert.StartsWith(result, "Scan partial. 12 nodes, 13 edges. Coverage:");
+        var persisted = new GraphStore();
+        persisted.Deserialize(await File.ReadAllTextAsync(GraphRegistry.GetGraphPath(solutionPath)));
+        Assert.AreEqual(12, persisted.NodeCount);
+        Assert.AreEqual(13, persisted.EdgeCount);
+        Assert.IsTrue(persisted.TryGetNode("IncrementalFixtures.Consumer.Client", out _));
     }
 
     [TestMethod]
     public async Task ProjectScanAsync_PreCancelled_PreservesPublishedGraph()
     {
-        var solutionPath = FindRepoSolutionPath();
+        var solutionPath = CopyIncrementalSolution();
         var registry = new GraphRegistry();
         var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), registry);
+        var tool = CreateTool(registry);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -115,24 +79,28 @@ public class ProjectScanToolTests
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_cancelled", error?.Code);
         Assert.IsTrue(store.TryGetNode("Previous", out _));
+        Assert.IsFalse(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
     }
 
     [TestMethod]
     [Timeout(120_000)]
     public async Task ProjectScanAsync_PersistenceFailure_PreservesPublishedGraph()
     {
-        var solutionPath = FindRepoSolutionPath();
+        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
+        var solutionPath = Path.Combine(directory, "Incremental.sln");
         var registry = new GraphRegistry();
         var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = new ProjectScanTool(new GraphBuilder(new EdgeExtractor()), registry, (_, _, _) => throw new IOException("controlled write failure"));
+        var tool = CreateTool(registry, (_, _, _) => throw new IOException("controlled write failure"));
 
         var json = await tool.ProjectScanAsync(solutionPath);
 
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_failed", error?.Code);
+        StringAssert.Contains(error?.Message, "phase=persistence");
         StringAssert.Contains(error?.Message, "controlled write failure");
         Assert.IsTrue(store.TryGetNode("Previous", out _));
+        Assert.IsFalse(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
     }
 
     [TestMethod]
@@ -140,15 +108,12 @@ public class ProjectScanToolTests
     public async Task ProjectScanAsync_MixedLegacyAndMissingTargets_ReportsPartialCoverage()
     {
         var writes = new Dictionary<string, string>();
-        var tool = new ProjectScanTool(
-            new GraphBuilder(new EdgeExtractor()),
-            new GraphRegistry(),
-            (path, content, _) =>
-            {
-                writes[path] = content;
-                return Task.CompletedTask;
-            });
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+        var tool = CreateTool(writeFile: (path, content, _) =>
+        {
+            writes[path] = content;
+            return Task.CompletedTask;
+        });
+        var solutionPath = CopyCoverageSolution();
 
         var result = await tool.ProjectScanAsync(solutionPath);
 
@@ -164,13 +129,10 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_DiagnosticsLogWriteFailure_KeepsScanResult()
     {
-        var tool = new ProjectScanTool(
-            new GraphBuilder(new EdgeExtractor()),
-            new GraphRegistry(),
-            (path, _, _) => path.EndsWith("scan-diagnostics.log")
-                ? throw new IOException("log write failure")
-                : Task.CompletedTask);
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+        var tool = CreateTool(writeFile: (path, _, _) => path.EndsWith("scan-diagnostics.log")
+            ? throw new IOException("log write failure")
+            : Task.CompletedTask);
+        var solutionPath = CopyCoverageSolution();
 
         var result = await tool.ProjectScanAsync(solutionPath);
 
@@ -182,19 +144,17 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_EmptyScope_ReturnsDedicatedErrorAndPreservesSnapshot()
     {
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Empty.sln");
+        var directory = CopyFixture("ScanFixtures");
+        var solutionPath = Path.Combine(directory, "Empty.sln");
         var registry = new GraphRegistry();
         var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
         var writes = new Dictionary<string, string>();
-        var tool = new ProjectScanTool(
-            new GraphBuilder(new EdgeExtractor()),
-            registry,
-            (path, content, _) =>
-            {
-                writes[path] = content;
-                return Task.CompletedTask;
-            });
+        var tool = CreateTool(registry, (path, content, _) =>
+        {
+            writes[path] = content;
+            return Task.CompletedTask;
+        });
 
         var json = await tool.ProjectScanAsync(solutionPath);
 
@@ -209,19 +169,16 @@ public class ProjectScanToolTests
     [Timeout(120_000)]
     public async Task ProjectScanAsync_CancelledDuringDiagnosticsLogWrite_KeepsNewGraphAndReportsLogFailure()
     {
-        var solutionPath = Path.Combine(FindRepoRoot(), "tests", "ContextManager.Analysis.Tests", "Fixtures", "ScanFixtures", "Coverage.sln");
+        var solutionPath = CopyCoverageSolution();
         var registry = new GraphRegistry();
         var store = registry.GetStore(solutionPath);
         store.AddNode(new GraphNode("Previous", "Class"));
         using var cts = new CancellationTokenSource();
-        var tool = new ProjectScanTool(
-            new GraphBuilder(new EdgeExtractor()),
-            registry,
-            (path, _, token) =>
-            {
-                if (!path.EndsWith("scan-diagnostics.log"))
-                    return Task.CompletedTask;
-                cts.Cancel();
+        var tool = CreateTool(registry, (path, _, token) =>
+        {
+            if (!path.EndsWith("scan-diagnostics.log"))
+                return Task.CompletedTask;
+            cts.Cancel();
                 throw new OperationCanceledException(token);
             });
 
@@ -233,42 +190,48 @@ public class ProjectScanToolTests
         Assert.IsTrue(store.TryGetNode("ScanFixtures.SdkType", out _));
     }
 
-    private static string FindRepoRoot()
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task ProjectScanAsync_SecondScanAfterEdit_UpdatesGraphIncrementally()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
-        {
-            if (File.Exists(Path.Combine(directory.FullName, "ContextManager.sln")))
-                return directory.FullName;
-            directory = directory.Parent;
-        }
+        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
+        var solutionPath = Path.Combine(directory, "Incremental.sln");
+        var registry = new GraphRegistry();
+        var tool = CreateTool(registry);
 
-        throw new InvalidOperationException("Could not locate repository root.");
+        StringAssert.StartsWith(await tool.ProjectScanAsync(solutionPath), "Scan partial. 12 nodes, 13 edges.");
+        var firstRevision = registry.TryLoad(solutionPath)!.Revision;
+        var sender = Path.Combine(directory, "Core", "Sender.cs");
+        FixtureCopy.Edit(sender, "        Audit.Record();\n", "");
+
+        var second = await tool.ProjectScanAsync(solutionPath);
+
+        StringAssert.StartsWith(second, "Scan partial. 12 nodes, 12 edges.");
+        var graph = registry.TryLoad(solutionPath)!;
+        Assert.AreNotEqual(firstRevision, graph.Revision);
+        Assert.IsTrue(graph.HasProvenance);
+        Assert.IsFalse(graph.GetAggregatedNeighbors("IncrementalFixtures.Core.Sender").Any(n => n.Id == "IncrementalFixtures.Core.Audit"));
+        Assert.IsTrue(File.Exists(Path.Combine(directory, ".context-manager", "scan-diagnostics.log")));
     }
 
     [TestMethod]
     public async Task AtomicWriter_ReplacesExistingFileAndLeavesNoTemporaryFile()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"context-manager-atomic-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        var directory = NewTempDirectory();
         var target = Path.Combine(directory, "graph.json");
         await File.WriteAllTextAsync(target, "old");
-        var method = typeof(ProjectScanTool).GetMethod("WriteAtomicallyAsync", BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.IsNotNull(method);
 
-        var task = (Task?)method.Invoke(null, [target, "new", CancellationToken.None]);
-        Assert.IsNotNull(task);
-        await task;
+        await GraphRegistry.WriteAtomicallyAsync(target, "new", CancellationToken.None);
 
         Assert.AreEqual("new", await File.ReadAllTextAsync(target));
         Assert.AreEqual(1, Directory.GetFiles(directory).Length);
-        Directory.Delete(directory, true);
     }
 
     [TestMethod]
     public void FormatDiagnostics_GroupsOrdersTruncatesAndBounds()
     {
-        var method = typeof(ProjectScanTool).GetMethod("FormatDiagnostics", BindingFlags.NonPublic | BindingFlags.Static);
+        var method = typeof(ProjectScanTool).Assembly.GetType("ContextManager.Mcp.Tools.GraphSyncRunner")!
+            .GetMethod("FormatDiagnostics", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.IsNotNull(method);
         const string logPath = "/repo/.context-manager/scan-diagnostics.log";
         string Format(IReadOnlyList<GraphBuildDiagnostic> diagnostics) =>
