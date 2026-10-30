@@ -19,6 +19,8 @@ public class GraphStoreTests
     //
     // Node kinds: Class for all.
 
+    private static readonly GraphBaseline EmptyBaseline = new("/s.sln", [], [], [], []);
+
     private static GraphStore BuildSampleGraph()
     {
         var store = new GraphStore();
@@ -1056,27 +1058,21 @@ public class GraphStoreTests
             }
         })).ToArray();
 
-        // One writer: stage a rebuild, build a much larger graph into staging, then commit.
-        // While staging, the published _state is untouched, so readers keep seeing A..D.
+        // One writer: stage a much larger candidate from document records, then publish it.
+        // Staging never touches the published snapshot, so readers keep seeing A..D.
         var writer = Task.Run(() =>
         {
-            store.BeginRebuild();
-            store.AddNode(new GraphNode("A", "Class"));
-            store.AddNode(new GraphNode("B", "Class"));
-            store.AddNode(new GraphNode("C", "Class"));
-            store.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
-            store.AddEdge(new GraphEdge(new GraphNode("B", "Class"), new GraphNode("C", "Class"), "CALLS"));
-
-            for (var i = 0; i < 300; i++)
+            var c = new GraphNode("C", "Class");
+            var edges = new List<GraphEdge>
             {
-                store.AddNode(new GraphNode($"N{i}", "Class"));
-                store.AddEdge(new GraphEdge(
-                    new GraphNode("C", "Class"),
-                    new GraphNode($"N{i}", "Class"),
-                    "CALLS"));
-            }
+                new(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"),
+                new(new GraphNode("B", "Class"), c, "CALLS"),
+            };
+            edges.AddRange(Enumerable.Range(0, 300).Select(i => new GraphEdge(c, new GraphNode($"N{i}", "Class"), "CALLS")));
+            var record = new GraphDocumentRecord("P", "/doc.cs", "checksum", 0, 0, [], edges);
 
-            store.CommitRebuild();
+            var candidate = store.Stage([], [record], EmptyBaseline, fromEmpty: true);
+            store.Publish(candidate);
             writerDone.Set();
         });
 
@@ -1087,7 +1083,7 @@ public class GraphStoreTests
             $"Readers must not throw during a concurrent rebuild. Got: {readerException}");
 
         // The committed snapshot must be visible to a post-commit read.
-        Assert.IsTrue(store.NodeCount >= 300, "Committed rebuild must be visible after CommitRebuild.");
+        Assert.IsTrue(store.NodeCount >= 300, "Published candidate must be visible after Publish.");
         var neighbors = store.GetAggregatedNeighbors("A");
         Assert.IsTrue(neighbors.Any(n => n.Id == "B"),
             "Post-commit read must see the rebuilt graph (A → B).");
@@ -1241,54 +1237,6 @@ public class GraphStoreTests
     }
 
     [TestMethod]
-    public async Task Rebuilds_AreSerializedAndEachSerializesItsOwnSnapshot()
-    {
-        var store = new GraphStore();
-        await store.BeginRebuildAsync();
-        store.AddNode(new GraphNode("First", "Class"));
-
-        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var second = Task.Run(async () =>
-        {
-            secondStarted.SetResult(true);
-            await store.BeginRebuildAsync();
-            secondEntered.SetResult(true);
-            store.AddNode(new GraphNode("Second", "Class"));
-            var json = store.SerializeRebuild();
-            store.CommitRebuild();
-            return json;
-        });
-
-        await secondStarted.Task;
-        await Task.Delay(25);
-        Assert.IsFalse(secondEntered.Task.IsCompleted);
-        var firstJson = store.SerializeRebuild();
-        store.CommitRebuild();
-        var secondJson = await second;
-
-        StringAssert.Contains(firstJson, "First");
-        Assert.IsFalse(firstJson.Contains("Second", StringComparison.Ordinal));
-        StringAssert.Contains(secondJson, "Second");
-        Assert.IsFalse(secondJson.Contains("First", StringComparison.Ordinal));
-    }
-
-    [TestMethod]
-    public async Task BeginRebuildAsync_CancelledWriterWait_PreservesActiveRebuild()
-    {
-        var store = new GraphStore();
-        await store.BeginRebuildAsync();
-        store.AddNode(new GraphNode("Active", "Class"));
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        await Assert.ThrowsAsync<OperationCanceledException>(() => store.BeginRebuildAsync(cts.Token));
-
-        StringAssert.Contains(store.SerializeRebuild(), "Active");
-        store.AbortRebuild();
-    }
-
-    [TestMethod]
     public void GetAggregatedNeighbors_HighFanIn_UsesOwnerIndexAndPreservesEncounterOrder()
     {
         var store = new GraphStore();
@@ -1307,5 +1255,225 @@ public class GraphStoreTests
         Assert.AreEqual(1_000, neighbors.Count);
         Assert.AreEqual("Consumer0", neighbors[0].Id);
         Assert.AreEqual("Consumer999", neighbors[^1].Id);
+    }
+
+    // ── Provenance and contribution deltas ───────────────────────────────────
+
+    private static GraphNode N(string id, string kind = "Class", string? file = null) => new(id, kind, file);
+
+    private static GraphDocumentRecord Doc(string path, int order, IReadOnlyList<GraphNode> nodes, IReadOnlyList<GraphEdge> edges) =>
+        new("P", path, $"sum-{path}", 0, order, nodes, edges);
+
+    private static string GraphOnly(GraphStore store)
+    {
+        using var json = JsonDocument.Parse(store.Serialize());
+        return json.RootElement.GetProperty("nodes").GetRawText() + json.RootElement.GetProperty("edges").GetRawText();
+    }
+
+    [TestMethod]
+    public void Serialize_NodeFile_RoundTripsAndReachesNeighbors()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(N("A", file: "/src/A.cs"), N("B", file: "/src/B.cs"), "CALLS"));
+
+        var restored = new GraphStore();
+        restored.Deserialize(store.Serialize());
+
+        Assert.IsTrue(restored.TryGetNode("B", out var b));
+        Assert.AreEqual("/src/B.cs", b!.File);
+        Assert.AreEqual("/src/B.cs", restored.GetAggregatedNeighbors("A").Single().File);
+    }
+
+    [TestMethod]
+    public void Deserialize_LegacyPayloadWithoutDocuments_IsQueryableWithoutProvenance()
+    {
+        const string json = """{"nodes":[{"id":"A","kind":"Class"},{"id":"B","kind":"Class"}],"edges":[{"source":"A","target":"B","type":"CALLS"}]}""";
+        var store = new GraphStore();
+
+        store.Deserialize(json);
+
+        Assert.IsFalse(store.HasProvenance);
+        Assert.IsNull(store.Revision);
+        Assert.IsNull(store.Baseline);
+        CollectionAssert.AreEqual(new[] { "B" }, store.ShortestPath("A", "B").Skip(1).ToList());
+        Assert.IsFalse(store.Serialize().Contains("documents", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void Stage_WithDocuments_RoundTripsProvenanceRevisionAndBaseline()
+    {
+        var store = new GraphStore();
+        var baseline = new GraphBaseline("/s.sln", [], [new GraphTrackedFile("/s.sln", "abc")], ["/a.cs"], [new GraphBuildDiagnostic("Warning", "w")]);
+        var candidate = store.Stage([], [Doc("/a.cs", 0, [N("A")], [new GraphEdge(N("A"), N("B"), "CALLS")])], baseline, fromEmpty: true);
+
+        var restored = new GraphStore();
+        restored.Deserialize(candidate.Serialize());
+
+        Assert.IsTrue(restored.HasProvenance);
+        Assert.AreEqual(candidate.Revision, restored.Revision);
+        Assert.AreEqual("abc", restored.Baseline!.Inputs.Single().Checksum);
+        Assert.AreEqual(1, restored.Documents.Count);
+        Assert.AreEqual(candidate.Serialize(), restored.Serialize());
+    }
+
+    [TestMethod]
+    public void Stage_DoesNotPublishUntilPublish()
+    {
+        var store = BuildSampleGraph();
+
+        var candidate = store.Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline, fromEmpty: true);
+
+        Assert.IsTrue(store.TryGetNode("A", out _));
+        Assert.IsFalse(store.TryGetNode("X", out _));
+        store.Publish(candidate);
+        Assert.IsFalse(store.TryGetNode("A", out _));
+        Assert.IsTrue(store.TryGetNode("X", out _));
+    }
+
+    [TestMethod]
+    public void Stage_RemovedDocument_EvictsOnlyUnownedNodesAndEdges()
+    {
+        var store = new GraphStore();
+        var shared = new GraphEdge(N("Caller"), N("Target"), "CALLS");
+        store.Publish(store.Stage([], [
+            Doc("/caller.cs", 0, [N("Caller")], [shared, new GraphEdge(N("Caller"), N("Only"), "REFERENCES")]),
+            Doc("/target.cs", 1, [N("Target")], []),
+            Doc("/other.cs", 2, [N("Other")], [shared]),
+        ], EmptyBaseline, fromEmpty: true));
+
+        var updated = store.Stage([("P", "/caller.cs")], [], EmptyBaseline, fromEmpty: false);
+
+        Assert.IsFalse(updated.TryGetNode("Only", out _), "A node owned only by the removed document disappears.");
+        Assert.IsTrue(updated.TryGetNode("Caller", out _), "A node still referenced by a surviving contribution stays.");
+        Assert.IsTrue(updated.TryGetNode("Target", out _));
+        Assert.AreEqual(1, updated.EdgeCount, "The shared edge survives through the other document's ownership.");
+    }
+
+    [TestMethod]
+    public void Stage_PartialTypeAcrossDocuments_SurvivesRemovalOfOneDeclarationAndUsesSurvivingFile()
+    {
+        var store = new GraphStore();
+        var part1 = Doc("/T.Part1.cs", 0, [N("T", file: "/T.Part1.cs"), N("T.A", "Method", "/T.Part1.cs")],
+            [new GraphEdge(N("T", file: "/T.Part1.cs"), N("T.A", "Method", "/T.Part1.cs"), "CONTAINS")]);
+        var part2 = Doc("/T.Part2.cs", 1, [N("T", file: "/T.Part2.cs"), N("T.B", "Method", "/T.Part2.cs")],
+            [new GraphEdge(N("T", file: "/T.Part2.cs"), N("T.B", "Method", "/T.Part2.cs"), "CONTAINS")]);
+        store.Publish(store.Stage([], [part1, part2], EmptyBaseline, fromEmpty: true));
+
+        var updated = store.Stage([part1.Key], [], EmptyBaseline, fromEmpty: false);
+
+        Assert.IsTrue(updated.TryGetNode("T", out var t));
+        Assert.AreEqual("/T.Part2.cs", t!.File);
+        Assert.IsFalse(updated.TryGetNode("T.A", out _));
+        Assert.IsTrue(updated.TryGetNode("T.B", out _));
+        Assert.AreEqual(0, updated.GetAggregatedNeighbors("T").Count);
+    }
+
+    [TestMethod]
+    public void Stage_AfterRoundTripAndOwnerRemoval_PreservesSurvivingDeclarationAndEndpointMetadata()
+    {
+        var first = Doc("/First.cs", 0, [N("Shared", "Class", "/First.cs")],
+            [new GraphEdge(N("Caller", file: "/First.cs"), N("Target", "Class", "/First.cs"), "REFERENCES")]);
+        var second = Doc("/Second.cs", 1, [N("Shared", "Interface", "/Second.cs")],
+            [new GraphEdge(N("Caller", file: "/Second.cs"), N("Target", "Interface", "/Second.cs"), "REFERENCES")]);
+        var original = new GraphStore().Stage([], [first, second], EmptyBaseline, fromEmpty: true);
+        var restored = new GraphStore();
+        restored.Deserialize(original.Serialize());
+
+        var updated = restored.Stage([first.Key], [], EmptyBaseline, fromEmpty: false);
+        var fresh = new GraphStore().Stage([], [second], EmptyBaseline, fromEmpty: true);
+
+        Assert.AreEqual(GraphOnly(fresh), GraphOnly(updated));
+        Assert.IsTrue(updated.TryGetNode("Shared", out var declaration));
+        Assert.AreEqual("/Second.cs", declaration!.File);
+        Assert.AreEqual("Interface", declaration.Kind);
+        Assert.IsTrue(updated.TryGetNode("Target", out var endpoint));
+        Assert.AreEqual("/Second.cs", endpoint!.File);
+        Assert.AreEqual("Interface", endpoint.Kind);
+    }
+
+    [TestMethod]
+    public void Deserialize_IdOnlyContributions_RemainQueryableWithoutTrustedProvenance()
+    {
+        const string json = """
+            {"revision":"old","nodes":[{"id":"Shared","kind":"Class","file":"/First.cs"}],"edges":[],
+             "documents":[{"project":"P","path":"/Second.cs","checksum":"abc","projectOrder":0,"documentOrder":0,
+                           "nodes":["Shared"],"edges":[]}]}
+            """;
+        var restored = new GraphStore();
+
+        restored.Deserialize(json);
+
+        Assert.IsTrue(restored.TryGetNode("Shared", out _));
+        Assert.IsFalse(restored.HasProvenance);
+    }
+
+    [TestMethod]
+    public void Stage_ReplacingEarlyDocument_KeepsFreshScanEncounterOrder()
+    {
+        var first = Doc("/1.cs", 0, [N("A")], [new GraphEdge(N("A"), N("Hub"), "CALLS")]);
+        var second = Doc("/2.cs", 1, [N("B")], [new GraphEdge(N("B"), N("Hub"), "CALLS")]);
+        var replacement = Doc("/1.cs", 0, [N("A2")], [new GraphEdge(N("A2"), N("Hub"), "CALLS"), new GraphEdge(N("A2"), N("B"), "CALLS")]);
+        var store = new GraphStore();
+        store.Publish(store.Stage([], [first, second], EmptyBaseline, fromEmpty: true));
+
+        var incremental = store.Stage([], [replacement], EmptyBaseline, fromEmpty: false);
+        var fresh = new GraphStore().Stage([], [replacement, second], EmptyBaseline, fromEmpty: true);
+
+        Assert.AreEqual(GraphOnly(fresh), GraphOnly(incremental));
+        CollectionAssert.AreEqual(
+            fresh.GetAggregatedNeighbors("Hub").Select(n => n.Id).ToList(),
+            incremental.GetAggregatedNeighbors("Hub").Select(n => n.Id).ToList());
+        Assert.AreEqual("A2", incremental.GetAggregatedNeighbors("Hub")[0].Id);
+    }
+
+    [TestMethod]
+    public void Stage_InsertingDocumentBeforeExistingOnes_MatchesFreshScan()
+    {
+        var a = Doc("/A.cs", 0, [N("A")], []);
+        var b = Doc("/B.cs", 1, [N("B")], [new GraphEdge(N("B"), N("A"), "REFERENCES")]);
+        var inserted = Doc("/Inserted.cs", 1, [N("Inserted")], [new GraphEdge(N("Inserted"), N("A"), "CALLS")]);
+        var shifted = b with { DocumentOrder = 2 };
+        var store = new GraphStore();
+        store.Publish(store.Stage([], [a, b], EmptyBaseline, fromEmpty: true));
+
+        var incremental = store.Stage([], [inserted, shifted], EmptyBaseline, fromEmpty: false);
+        var fresh = new GraphStore().Stage([], [a, inserted, shifted], EmptyBaseline, fromEmpty: true);
+
+        Assert.AreEqual(GraphOnly(fresh), GraphOnly(incremental));
+        Assert.AreEqual(fresh.NodeCount, incremental.NodeCount);
+        Assert.AreEqual(fresh.EdgeCount, incremental.EdgeCount);
+        CollectionAssert.AreEqual(
+            fresh.GetAggregatedNeighbors("A").Select(n => n.Id).ToList(),
+            incremental.GetAggregatedNeighbors("A").Select(n => n.Id).ToList());
+    }
+
+    [TestMethod]
+    public void Capture_KeepsItsSnapshotAfterLaterPublish()
+    {
+        var store = BuildSampleGraph();
+        var captured = store.Capture();
+
+        store.Publish(store.Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline, fromEmpty: true));
+
+        Assert.IsTrue(captured.TryGetNode("A", out _));
+        Assert.IsFalse(captured.TryGetNode("X", out _));
+    }
+
+    [TestMethod]
+    public void TryGetShortNameMatches_MatchesShortQualifiedAndGenericNamesOfTypesOnly()
+    {
+        var store = new GraphStore();
+        store.AddNode(N("App.Orders.IRepository<T>", "Interface"));
+        store.AddNode(N("App.Orders.OrderService"));
+        store.AddNode(N("App.Billing.OrderService"));
+        store.AddNode(N("App.Orders.OrderService.Run()", "Method"));
+
+        CollectionAssert.AreEqual(new[] { "App.Orders.IRepository<T>" },
+            store.TryGetShortNameMatches("IRepository<Order>").Select(n => n.Id).ToList());
+        CollectionAssert.AreEqual(new[] { "App.Orders.OrderService", "App.Billing.OrderService" },
+            store.TryGetShortNameMatches("OrderService").Select(n => n.Id).ToList());
+        CollectionAssert.AreEqual(new[] { "App.Billing.OrderService" },
+            store.TryGetShortNameMatches("Billing.OrderService").Select(n => n.Id).ToList());
+        Assert.AreEqual(0, store.TryGetShortNameMatches("Service").Count);
     }
 }

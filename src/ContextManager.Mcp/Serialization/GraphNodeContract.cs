@@ -6,10 +6,12 @@ namespace ContextManager.Mcp.Serialization;
 /// when the queried node depends on the neighbor, or <c>"in"</c> when the neighbor
 /// depends on the queried node. <c>EdgeKinds</c> maps each edge kind (IMPLEMENTS /
 /// INHERITS / INJECTS / CALLS / RETURNS / REFERENCES) to the number of underlying edges
-/// aggregated into this entry. One entry is emitted per (id, direction).
+/// aggregated into this entry. <c>File</c> is the neighbor's declaring source file when
+/// known. One entry is emitted per (id, direction).
 /// </summary>
 public sealed record GraphNodeContract(
     string Id,
     string Kind,
     string Direction,
-    IReadOnlyDictionary<string, int> EdgeKinds);
+    IReadOnlyDictionary<string, int> EdgeKinds,
+    string? File = null);

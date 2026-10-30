@@ -4,6 +4,7 @@ using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
 using ContextManager.Mcp.Serialization;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -15,38 +16,45 @@ public sealed class GraphImpactAnalysisTool
         new HashSet<string>(StringComparer.Ordinal) { "CALLS", "INJECTS", "REFERENCES", "RETURNS", "INHERITS" };
 
     private readonly GraphRegistry _registry;
+    private readonly IGraphSynchronizer? _synchronizer;
 
     public GraphImpactAnalysisTool(GraphRegistry registry)
     {
         _registry = registry;
     }
 
+    [ActivatorUtilitiesConstructor]
+    public GraphImpactAnalysisTool(GraphRegistry registry, IGraphSynchronizer synchronizer)
+    {
+        _registry = registry;
+        _synchronizer = synchronizer;
+    }
+
     [McpServerTool(Name = "graph_impact_analysis"), Description(
         "Performs an impact-specific backward traversal from a node following CALLS, INJECTS, REFERENCES, RETURNS, and INHERITS edges. " +
+        GraphSyncRunner.QuerySynchronizationDescription + " " +
         "Seeds the BFS with the node, its direct members (via CONTAINS), and any interfaces it implements (via IMPLEMENTS) plus their members, " +
         "so member-level dependencies aggregate to their declaring type. " +
         "Member nodes reached during traversal are rolled up to their declaring type. " +
-        "Returns an object with 'affectedIds' (ordered list of impacted type IDs) and 'diagnostics' " +
+        "Returns an object with 'affectedIds' (ordered list of impacted type IDs), 'affectedFiles' (each returned affected ID mapped to its declaring source file, when known, ready for inspect_file), and 'diagnostics' " +
         "(warning entries for interfaces in scope that have zero in-graph implementations — " +
         "a probable reflection or dynamic-dispatch blind spot where the impact set may be incomplete). " +
         "When 'maxResults' is set, 'affectedIds' is capped to that many BFS-ordered entries and a boolean " +
         "'truncated' flag indicates whether additional reachable types were omitted.")]
-    public Task<string> GraphImpactAnalysisAsync(
-        [Description("Absolute path to the .sln whose graph to query, the same path passed to project_scan. The graph is read from .context-manager/graph.json next to it and reloaded whenever that file changes.")] string solutionPath,
+    public async Task<string> GraphImpactAnalysisAsync(
+        [Description(GraphSyncRunner.QuerySolutionPathDescription)] string solutionPath,
         [Description("The ISymbol.ToDisplayString() ID of the node to analyze for impact.")] string nodeId,
         [Description("Optional cap on the number of affectedIds returned. The full BFS still runs to keep the result deterministic; when the cap is hit, the returned ids are the BFS-ordered prefix and 'truncated' is set to true. Omit for the complete impact set.")] int? maxResults = null,
         CancellationToken ct = default)
     {
-        var store = _registry.TryLoad(solutionPath);
+        var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_registry, _synchronizer, solutionPath, "graph_impact_analysis", ct);
         if (store is null)
-            return Task.FromResult(JsonSerializer.Serialize(
-                new AnalysisError("graph_not_found", $"No graph for {solutionPath}. Run project_scan first.", solutionPath),
-                AnalysisJson.Options));
+            return error!;
 
         if (!store.TryGetNode(nodeId, out var startNode))
-            return Task.FromResult(JsonSerializer.Serialize(
+            return JsonSerializer.Serialize(
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
-                AnalysisJson.Options));
+                AnalysisJson.Options);
 
         IReadOnlyList<string> affectedIds;
         bool truncated;
@@ -61,9 +69,16 @@ public sealed class GraphImpactAnalysisTool
         }
 
         var diagnostics = BuildReflectionDiagnostics(store, startNode!, nodeId, bridgedInterfaceIds);
-        var result = new GraphImpactResult(affectedIds, diagnostics, truncated);
+        var affectedFiles = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var id in affectedIds)
+        {
+            if (store.TryGetNode(id, out var node) && node!.File is not null)
+                affectedFiles[id] = node.File;
+        }
 
-        return Task.FromResult(JsonSerializer.Serialize(result, AnalysisJson.Options));
+        var result = new GraphImpactResult(affectedIds, diagnostics, truncated, affectedFiles.Count == 0 ? null : affectedFiles);
+
+        return JsonSerializer.Serialize(result, AnalysisJson.Options);
     }
 
     // Collects the interface IDs relevant to this impact analysis: the start node itself

@@ -13,4 +13,5 @@ public sealed record TypeInfo(
     IReadOnlyList<string>? Members,
     bool? IsPartial = null,
     IReadOnlyList<string>? GenericConstraints = null,
-    IReadOnlyList<PropertyInfo>? Events = null);
+    IReadOnlyList<PropertyInfo>? Events = null,
+    TypeGraphContext? Graph = null);

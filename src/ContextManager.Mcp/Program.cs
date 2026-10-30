@@ -1,7 +1,4 @@
 using System.Reflection;
-using ContextManager.Analysis;
-using ContextManager.Analysis.Extraction;
-using ContextManager.Analysis.Graph;
 using ContextManager.Mcp;
 using ContextManager.Mcp.Setup;
 using Microsoft.Extensions.DependencyInjection;
@@ -53,12 +50,7 @@ AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
 TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
     Console.Error.WriteLine($"Unobserved server task exception:{Environment.NewLine}{eventArgs.Exception}");
 builder.Services
-    .AddSingleton<FileAnalyzer>()
-    .AddSingleton<CrossReferenceResolver>()
-    .AddSingleton<ContextAnalyzer>()
-    .AddSingleton<GraphRegistry>()
-    .AddSingleton<EdgeExtractor>()
-    .AddSingleton<GraphBuilder>()
+    .AddContextManagerServices()
     .AddMcpServer()
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
