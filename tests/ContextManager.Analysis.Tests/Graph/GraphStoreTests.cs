@@ -1369,6 +1369,45 @@ public class GraphStoreTests
     }
 
     [TestMethod]
+    public void Stage_AfterRoundTripAndOwnerRemoval_PreservesSurvivingDeclarationAndEndpointMetadata()
+    {
+        var first = Doc("/First.cs", 0, [N("Shared", "Class", "/First.cs")],
+            [new GraphEdge(N("Caller", file: "/First.cs"), N("Target", "Class", "/First.cs"), "REFERENCES")]);
+        var second = Doc("/Second.cs", 1, [N("Shared", "Interface", "/Second.cs")],
+            [new GraphEdge(N("Caller", file: "/Second.cs"), N("Target", "Interface", "/Second.cs"), "REFERENCES")]);
+        var original = new GraphStore().Stage([], [first, second], EmptyBaseline, fromEmpty: true);
+        var restored = new GraphStore();
+        restored.Deserialize(original.Serialize());
+
+        var updated = restored.Stage([first.Key], [], EmptyBaseline, fromEmpty: false);
+        var fresh = new GraphStore().Stage([], [second], EmptyBaseline, fromEmpty: true);
+
+        Assert.AreEqual(GraphOnly(fresh), GraphOnly(updated));
+        Assert.IsTrue(updated.TryGetNode("Shared", out var declaration));
+        Assert.AreEqual("/Second.cs", declaration!.File);
+        Assert.AreEqual("Interface", declaration.Kind);
+        Assert.IsTrue(updated.TryGetNode("Target", out var endpoint));
+        Assert.AreEqual("/Second.cs", endpoint!.File);
+        Assert.AreEqual("Interface", endpoint.Kind);
+    }
+
+    [TestMethod]
+    public void Deserialize_IdOnlyContributions_RemainQueryableWithoutTrustedProvenance()
+    {
+        const string json = """
+            {"revision":"old","nodes":[{"id":"Shared","kind":"Class","file":"/First.cs"}],"edges":[],
+             "documents":[{"project":"P","path":"/Second.cs","checksum":"abc","projectOrder":0,"documentOrder":0,
+                           "nodes":["Shared"],"edges":[]}]}
+            """;
+        var restored = new GraphStore();
+
+        restored.Deserialize(json);
+
+        Assert.IsTrue(restored.TryGetNode("Shared", out _));
+        Assert.IsFalse(restored.HasProvenance);
+    }
+
+    [TestMethod]
     public void Stage_ReplacingEarlyDocument_KeepsFreshScanEncounterOrder()
     {
         var first = Doc("/1.cs", 0, [N("A")], [new GraphEdge(N("A"), N("Hub"), "CALLS")]);

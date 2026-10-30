@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace ContextManager.Analysis.Tests.Graph;
 
@@ -20,5 +21,15 @@ public sealed class NamesGenerator : IIncrementalGenerator
 
             output.AddSource("Names.g.cs", source.Append("}\n").ToString());
         });
+
+        var callers = context.SyntaxProvider.CreateSyntaxProvider(
+            (node, _) => node is ClassDeclarationSyntax { Identifier.ValueText: "ConfigCaller" },
+            (syntax, _) => syntax.Node.SyntaxTree);
+        var targets = callers.Combine(context.AnalyzerConfigOptionsProvider)
+            .Select((input, _) => input.Right.GetOptions(input.Left).TryGetValue("cm_target_base", out var target) ? target : null)
+            .Where(target => target is not null);
+
+        context.RegisterSourceOutput(targets, (output, target) =>
+            output.AddSource("ConfigTarget.g.cs", $"namespace IncrementalFixtures.Core; public class ConfigTarget : {target} {{ }}"));
     }
 }

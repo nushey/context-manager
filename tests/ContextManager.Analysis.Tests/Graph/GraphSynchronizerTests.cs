@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ContextManager.Analysis.Graph;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -434,6 +435,92 @@ public class GraphSynchronizerTests : FixtureTest
 
     [TestMethod]
     [Timeout(180_000)]
+    public async Task AnalyzerConfigChange_RebindsGeneratedCallsAndMatchesFreshScan()
+    {
+        var directory = CopyFixture();
+        File.WriteAllText(Src(directory, "Core/.editorconfig"), "root = true\n[*.cs]\ncm_target_base = Alpha\n");
+        File.WriteAllText(Src(directory, "Core/ConfigCaller.cs"),
+            "namespace IncrementalFixtures.Core; public class Alpha { public void Go() { } } public class Beta { public void Go() { } } public class ConfigCaller { public void Use() { new ConfigTarget().Go(); } }");
+        AddToCoreProject(directory, $"  <ItemGroup>\n    <Analyzer Include=\"{typeof(NamesGenerator).Assembly.Location}\" />\n  </ItemGroup>");
+        var synchronizer = CreateSynchronizer(new GraphRegistry());
+        var initial = await SyncAsync(synchronizer, directory);
+        Assert.IsTrue(initial.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Alpha" && n.EdgeKinds.ContainsKey("CALLS")));
+        await SyncAsync(synchronizer, directory);
+        Edit(directory, "Core/.editorconfig", "Alpha", "Beta");
+
+        var result = await SyncAsync(synchronizer, directory);
+
+        Assert.IsTrue(result.Changed);
+        Assert.IsTrue(result.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Beta" && n.EdgeKinds.ContainsKey("CALLS")));
+        Assert.IsFalse(result.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Alpha"));
+        CollectionAssert.DoesNotContain(Relative(result, directory), "Independent/Standalone.cs");
+        await AssertMatchesFreshScanAsync(result.Graph, directory);
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task AnalyzerConfigAddedAndRemovedUnderSourceDirectory_IsDetected()
+    {
+        var directory = CopyFixture();
+        Directory.CreateDirectory(Src(directory, "Core/Nested"));
+        File.WriteAllText(Src(directory, "Core/Nested/ConfigCaller.cs"),
+            "namespace IncrementalFixtures.Core; public class Alpha { public void Go() { } } public class Beta { public void Go() { } } public class ConfigCaller { public void Use() { new ConfigTarget().Go(); } }");
+        File.WriteAllText(Src(directory, "Core/.editorconfig"), "root = true\n[*.cs]\ncm_target_base = Alpha\n");
+        AddToCoreProject(directory, $"  <ItemGroup>\n    <Analyzer Include=\"{typeof(NamesGenerator).Assembly.Location}\" />\n  </ItemGroup>");
+        var synchronizer = CreateSynchronizer(new GraphRegistry());
+        var initial = await SyncAsync(synchronizer, directory);
+        Assert.IsTrue(initial.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Alpha"));
+        File.WriteAllText(Src(directory, "Core/Nested/.editorconfig"), "[*.cs]\ncm_target_base = Beta\n");
+
+        var added = await SyncAsync(synchronizer, directory);
+
+        Assert.IsTrue(added.Changed);
+        Assert.IsTrue(added.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Beta"));
+        await AssertMatchesFreshScanAsync(added.Graph, directory);
+        File.Delete(Src(directory, "Core/Nested/.editorconfig"));
+
+        var removed = await SyncAsync(synchronizer, directory);
+
+        Assert.IsTrue(removed.Changed);
+        Assert.IsTrue(removed.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.ConfigCaller")
+            .Any(n => n.Id == "IncrementalFixtures.Core.Alpha"));
+        CollectionAssert.DoesNotContain(Relative(removed, directory), "Independent/Standalone.cs");
+        await AssertMatchesFreshScanAsync(removed.Graph, directory);
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task ColdSession_RemovingFirstProjectWithSharedNodeId_PreservesReusedDeclarationFile()
+    {
+        var directory = CopyFixture();
+        File.WriteAllText(Src(directory, "Independent/Duplicate.cs"),
+            "namespace IncrementalFixtures.Core; public static class Audit { public static void Record() { } }");
+        var synchronizer = CreateSynchronizer(new GraphRegistry());
+        var initial = await SyncAsync(synchronizer, directory);
+        Assert.IsTrue(initial.Graph.TryGetNode("IncrementalFixtures.Core.Audit", out var first));
+        Assert.AreEqual(Src(directory, "Core/Audit.cs"), first!.File);
+        synchronizer.Dispose();
+        var solution = File.ReadAllText(Sln(directory));
+        solution = System.Text.RegularExpressions.Regex.Replace(solution,
+            "Project\\([^\\r\\n]+ = \"(Core|Consumer)\"[^\\r\\n]+\\r?\\nEndProject\\r?\\n", string.Empty);
+        File.WriteAllText(Sln(directory), solution);
+
+        var result = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
+
+        Assert.AreEqual(0, result.ExtractedDocuments.Count);
+        Assert.IsTrue(result.Graph.TryGetNode("IncrementalFixtures.Core.Audit", out var survivor));
+        Assert.AreEqual(Src(directory, "Independent/Duplicate.cs"), survivor!.File);
+        await AssertMatchesFreshScanAsync(result.Graph, directory);
+        await AssertMatchesFreshScanAsync(new GraphRegistry().TryLoad(Sln(directory))!, directory);
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
     public async Task LegacyFrameworkProject_SyncsIncrementallyAlongsideSdkProjects()
     {
         const string coverage = "Coverage.sln";
@@ -448,7 +535,8 @@ public class GraphSynchronizerTests : FixtureTest
         File.WriteAllText(Src(directory, "LegacyProject/NotCompiled.cs"), "namespace ScanFixtures\n{\n    public class NotCompiled { }\n}\n");
         var nonMemberFile = await SyncAsync(synchronizer, directory, solution: coverage);
 
-        Assert.IsFalse(unchanged.Changed);
+        Assert.IsFalse(unchanged.Changed, JsonSerializer.Serialize(initial.Graph.Baseline!.Inputs
+            .Where(input => !unchanged.Graph.Baseline!.Inputs.Contains(input)), AnalysisJson.Options));
         Assert.AreEqual(0, unchanged.ExtractedDocuments.Count);
         CollectionAssert.AreEqual(new[] { "LegacyProject/LegacyType.cs" }, Relative(declarationEdit, directory));
         Assert.IsTrue(declarationEdit.Graph.TryGetNode("ScanFixtures.LegacyType.Use()", out _));
@@ -583,6 +671,31 @@ public class GraphSynchronizerTests : FixtureTest
         Assert.IsTrue(result.Graph.HasProvenance);
         Assert.IsFalse(result.Graph.TryGetNode("Legacy", out _));
         await AssertMatchesFreshScanAsync(result.Graph, directory);
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task IdOnlyGraphJson_FirstSyncReestablishesCompleteProvenance()
+    {
+        var directory = CopyFixture();
+        var initial = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
+        var payload = JsonNode.Parse(initial.Graph.Serialize())!;
+        foreach (var document in payload["documents"]!.AsArray())
+        {
+            document!.AsObject().Remove("nodeContributions");
+            document.AsObject().Remove("edgeContributions");
+        }
+
+        File.WriteAllText(GraphRegistry.GetGraphPath(Sln(directory)), payload.ToJsonString());
+
+        var result = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
+
+        Assert.AreEqual(6, result.ExtractedDocuments.Count);
+        Assert.IsTrue(result.Graph.HasProvenance);
+        await AssertMatchesFreshScanAsync(result.Graph, directory);
+        var unchanged = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
+        Assert.IsFalse(unchanged.Changed);
+        Assert.AreEqual(0, unchanged.ExtractedDocuments.Count);
     }
 
     [TestMethod]

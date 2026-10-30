@@ -40,13 +40,14 @@ public sealed class GraphEnricher : IGraphEnricher
             .ToList();
 
         var hints = new List<UnresolvedGraphHint>();
-        var seen = new HashSet<(string Type, string Id)>();
+        var seen = new HashSet<UnresolvedGraphHint>();
         foreach (var type in analysis.Unresolved)
         {
             foreach (var node in graphs.SelectMany(g => g.TryGetShortNameMatches(type)))
             {
-                if (seen.Add((type, node.Id)))
-                    hints.Add(new UnresolvedGraphHint(type, node.Id, node.File));
+                var hint = new UnresolvedGraphHint(type, node.Id, node.File);
+                if (seen.Add(hint))
+                    hints.Add(hint);
             }
         }
 

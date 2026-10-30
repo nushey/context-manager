@@ -67,6 +67,39 @@ public class InspectContextToolTests : FixtureTest
     }
 
     [TestMethod]
+    public async Task InspectContextAsync_DifferentSolutionsWithSameTypeId_PreservesDistinctHintsAndDeduplicatesRepeatedGraph()
+    {
+        var sources = new List<string>();
+        var expected = new List<(string, string, string)>();
+        foreach (var name in new[] { "First", "Second" })
+        {
+            var directory = NewTempDirectory();
+            var solution = Path.Combine(directory, "App.sln");
+            File.WriteAllText(solution, string.Empty);
+            foreach (var caller in new[] { "One", "Two" })
+            {
+                var source = Path.Combine(directory, caller + ".cs");
+                File.WriteAllText(source, $"namespace {name}; public class {caller}(IRepository repository) {{ }}");
+                sources.Add(source);
+            }
+
+            var declaration = Path.Combine(directory, "IRepository.cs");
+            var store = new GraphStore();
+            store.AddNode(new GraphNode("Shared.IRepository", "Interface", declaration));
+            var graphPath = GraphRegistry.GetGraphPath(solution);
+            Directory.CreateDirectory(Path.GetDirectoryName(graphPath)!);
+            File.WriteAllText(graphPath, store.Serialize());
+            expected.Add(("IRepository", "Shared.IRepository", declaration));
+        }
+
+        var tool = new InspectContextTool(new ContextAnalyzer(new CrossReferenceResolver()), new GraphEnricher(new GraphRegistry()));
+
+        var result = JsonSerializer.Deserialize<ContextAnalysis>(await tool.InspectContextAsync(sources), AnalysisJson.Options)!;
+
+        CollectionAssert.AreEqual(expected, result.UnresolvedHints!.Select(h => (h.Type, h.Id, h.File!)).ToList());
+    }
+
+    [TestMethod]
     public async Task InspectContextAsync_NoGraph_OmitsHints()
     {
         var directory = NewTempDirectory();

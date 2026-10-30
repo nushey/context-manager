@@ -598,7 +598,9 @@ public class GraphStore
                         d.ProjectOrder,
                         d.DocumentOrder,
                         d.Nodes.Select(n => n.Id).ToList(),
-                        d.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList()))
+                        d.Edges.Select(e => new EdgeDto(e.Source.Id, e.Target.Id, e.Type)).ToList(),
+                        d.Nodes.ToList(),
+                        d.Edges.ToList()))
                     .ToList()
                 : null,
             Baseline: s.HasProvenance ? s.Baseline : null);
@@ -622,7 +624,7 @@ public class GraphStore
             nodeById.TryAdd(n.Id, new GraphNode(n.Id, n.Kind, n.File));
 
         var mutation = new Mutation(State.Empty);
-        if (payload.Documents is null)
+        if (payload.Documents is null || payload.Documents.Any(d => d.NodeContributions is null || d.EdgeContributions is null))
         {
             foreach (var node in nodeById.Values)
                 mutation.TouchAdHoc(node);
@@ -645,11 +647,8 @@ public class GraphStore
                 d.Checksum,
                 d.ProjectOrder,
                 d.DocumentOrder,
-                d.Nodes.Where(nodeById.ContainsKey).Select(id => nodeById[id]).ToList(),
-                d.Edges
-                    .Where(e => nodeById.ContainsKey(e.Source) && nodeById.ContainsKey(e.Target))
-                    .Select(e => new GraphEdge(nodeById[e.Source], nodeById[e.Target], e.Type))
-                    .ToList()));
+                d.NodeContributions!,
+                d.EdgeContributions!));
         }
 
         _state = mutation.ToState() with
@@ -854,5 +853,7 @@ public class GraphStore
         int ProjectOrder,
         int DocumentOrder,
         List<string> Nodes,
-        List<EdgeDto> Edges);
+        List<EdgeDto> Edges,
+        List<GraphNode>? NodeContributions = null,
+        List<GraphEdge>? EdgeContributions = null);
 }

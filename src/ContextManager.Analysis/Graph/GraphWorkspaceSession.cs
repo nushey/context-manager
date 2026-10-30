@@ -58,7 +58,17 @@ public sealed class GraphWorkspaceSession : IDisposable
             var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
             var projectFiles = solution.Projects.Select(p => p.FilePath).OfType<string>().Distinct().ToList();
             var (imports, sourceRoots) = GraphEvaluationInputs.Collect(projectFiles);
-            var inputs = ScanInputs(solutionPath, projectFiles, imports, evaluationStartedUtc);
+            var configs = new Dictionary<string, GraphTrackedFile>(StringComparer.Ordinal);
+            foreach (var document in solution.Projects.SelectMany(p => p.AnalyzerConfigDocuments))
+            {
+                var config = await TrackAsync(document, null, ct);
+                configs.TryAdd(config.Path, config);
+            }
+
+            var sourceFiles = solution.Projects.SelectMany(p => p.Documents).Select(d => d.FilePath).OfType<string>().ToList();
+            var inputs = ScanInputs(solutionPath, projectFiles, imports.Concat(configs.Keys).ToList(), sourceFiles, evaluationStartedUtc)
+                .Select(input => configs.GetValueOrDefault(input.Path) ?? input)
+                .ToList();
             var candidates = ScanCandidateFiles(projectFiles, sourceRoots, evaluationStartedUtc);
             timer.Stop();
 
@@ -93,7 +103,8 @@ public sealed class GraphWorkspaceSession : IDisposable
     public static (bool EvaluationChanged, IReadOnlyList<string> ChangedFiles) CheckFreshness(GraphBaseline baseline)
     {
         var projectFiles = baseline.Projects.Select(p => p.FilePath).Distinct().ToList();
-        var inputs = ScanInputs(baseline.SolutionPath, projectFiles, baseline.Inputs.Select(i => i.Path).ToList(), notAfterUtc: null);
+        var sourceFiles = baseline.Projects.SelectMany(p => p.Documents).Select(d => d.Path).ToList();
+        var inputs = ScanInputs(baseline.SolutionPath, projectFiles, baseline.Inputs.Select(i => i.Path).ToList(), sourceFiles, notAfterUtc: null);
         if (!inputs.SequenceEqual(baseline.Inputs))
             return (true, []);
 
@@ -377,6 +388,7 @@ public sealed class GraphWorkspaceSession : IDisposable
         string solutionPath,
         IReadOnlyList<string> projectFiles,
         IReadOnlyList<string> evaluatedImports,
+        IReadOnlyList<string> sourceFiles,
         DateTime? notAfterUtc)
     {
         var paths = new List<string> { Path.GetFullPath(solutionPath) };
@@ -398,6 +410,21 @@ public sealed class GraphWorkspaceSession : IDisposable
         }
 
         directories.Add(Path.GetDirectoryName(Path.GetFullPath(solutionPath))!);
+        var configDirectories = new HashSet<string>(directories, StringComparer.Ordinal);
+        foreach (var source in sourceFiles)
+            for (var directory = Path.GetDirectoryName(Path.GetFullPath(source)); directory is not null; directory = Path.GetDirectoryName(directory))
+                configDirectories.Add(directory);
+
+        foreach (var directory in configDirectories.Order(StringComparer.Ordinal))
+        {
+            if (!Directory.Exists(directory))
+                continue;
+
+            foreach (var file in Directory.EnumerateFiles(directory, ".editorconfig").Concat(Directory.EnumerateFiles(directory, "*.globalconfig")).Order(StringComparer.Ordinal))
+                if (seen.Add(file))
+                    paths.Add(file);
+        }
+
         foreach (var directory in directories.Order(StringComparer.Ordinal))
         {
             if (!Directory.Exists(directory))
