@@ -8,7 +8,6 @@ namespace ContextManager.Mcp.Serialization;
 public sealed record GraphImpactResult(
     IReadOnlyList<string> AffectedIds,
     IReadOnlyList<GraphImpactDiagnostic> Diagnostics,
-    bool Truncated = false,
     IReadOnlyDictionary<string, string>? AffectedFiles = null);
 
 /// <summary>

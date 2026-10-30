@@ -38,13 +38,10 @@ public sealed class GraphImpactAnalysisTool
         "Member nodes reached during traversal are rolled up to their declaring type. " +
         "Returns an object with 'affectedIds' (ordered list of impacted type IDs), 'affectedFiles' (each returned affected ID mapped to its declaring source file, when known, ready for inspect_file), and 'diagnostics' " +
         "(warning entries for interfaces in scope that have zero in-graph implementations — " +
-        "a probable reflection or dynamic-dispatch blind spot where the impact set may be incomplete). " +
-        "When 'maxResults' is set, 'affectedIds' is capped to that many BFS-ordered entries and a boolean " +
-        "'truncated' flag indicates whether additional reachable types were omitted.")]
+        "a probable reflection or dynamic-dispatch blind spot where the impact set may be incomplete).")]
     public async Task<string> GraphImpactAnalysisAsync(
         [Description(GraphSyncRunner.QuerySolutionPathDescription)] string solutionPath,
         [Description("The ISymbol.ToDisplayString() ID of the node to analyze for impact.")] string nodeId,
-        [Description("Optional cap on the number of affectedIds returned. The full BFS still runs to keep the result deterministic; when the cap is hit, the returned ids are the BFS-ordered prefix and 'truncated' is set to true. Omit for the complete impact set.")] int? maxResults = null,
         CancellationToken ct = default)
     {
         var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_registry, _synchronizer, solutionPath, "graph_impact_analysis", ct);
@@ -56,17 +53,7 @@ public sealed class GraphImpactAnalysisTool
                 new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
                 AnalysisJson.Options);
 
-        IReadOnlyList<string> affectedIds;
-        bool truncated;
-        IReadOnlyList<string> bridgedInterfaceIds;
-
-        if (maxResults.HasValue)
-            affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, maxResults.Value, out truncated, out bridgedInterfaceIds, ct);
-        else
-        {
-            affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, out bridgedInterfaceIds, ct);
-            truncated = false;
-        }
+        var affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, out var bridgedInterfaceIds, ct);
 
         var diagnostics = BuildReflectionDiagnostics(store, startNode!, nodeId, bridgedInterfaceIds);
         var affectedFiles = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -76,7 +63,7 @@ public sealed class GraphImpactAnalysisTool
                 affectedFiles[id] = node.File;
         }
 
-        var result = new GraphImpactResult(affectedIds, diagnostics, truncated, affectedFiles.Count == 0 ? null : affectedFiles);
+        var result = new GraphImpactResult(affectedIds, diagnostics, affectedFiles.Count == 0 ? null : affectedFiles);
 
         return JsonSerializer.Serialize(result, AnalysisJson.Options);
     }

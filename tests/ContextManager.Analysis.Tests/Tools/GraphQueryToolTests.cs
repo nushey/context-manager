@@ -664,12 +664,12 @@ public class GraphQueryToolTests : FixtureTest
         var solutionPath = PersistGraph(store);
         var tool = new GraphImpactAnalysisTool(new GraphRegistry());
 
-        var capped = JsonSerializer.Deserialize<GraphImpactResult>(await tool.GraphImpactAnalysisAsync(solutionPath, "C", maxResults: 1), AnalysisJson.Options)!;
+        var impact = JsonSerializer.Deserialize<GraphImpactResult>(await tool.GraphImpactAnalysisAsync(solutionPath, "C"), AnalysisJson.Options)!;
         var none = await tool.GraphImpactAnalysisAsync(solutionPath, "A");
 
-        CollectionAssert.AreEqual(new[] { "B" }, capped.AffectedIds.ToList());
-        CollectionAssert.AreEqual(new[] { "B" }, capped.AffectedFiles!.Keys.ToList());
-        Assert.AreEqual("/src/B.cs", capped.AffectedFiles["B"]);
+        CollectionAssert.AreEqual(new[] { "B", "A" }, impact.AffectedIds.ToList());
+        CollectionAssert.AreEqual(new[] { "B", "A" }, impact.AffectedFiles!.Keys.ToList());
+        Assert.AreEqual("/src/B.cs", impact.AffectedFiles["B"]);
         Assert.IsFalse(none.Contains("affectedFiles", StringComparison.Ordinal));
     }
 
