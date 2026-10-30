@@ -2,12 +2,14 @@ namespace ContextManager.Mcp.Serialization;
 
 /// <summary>
 /// Result returned by <c>graph_impact_analysis</c>: the set of affected node IDs
-/// plus a diagnostics block that flags probable reflection blind spots.
+/// plus a diagnostics block that flags probable reflection blind spots, and
+/// <c>AffectedFiles</c> mapping each returned affected ID to its declaring source file.
 /// </summary>
 public sealed record GraphImpactResult(
     IReadOnlyList<string> AffectedIds,
     IReadOnlyList<GraphImpactDiagnostic> Diagnostics,
-    bool Truncated = false);
+    bool Truncated = false,
+    IReadOnlyDictionary<string, string>? AffectedFiles = null);
 
 /// <summary>
 /// A single diagnostic entry emitted when an interface in the analyzed scope

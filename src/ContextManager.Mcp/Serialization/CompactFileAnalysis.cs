@@ -1,3 +1,5 @@
+using ContextManager.Analysis.Models;
+
 namespace ContextManager.Mcp.Serialization;
 
 /// <summary>
@@ -11,11 +13,13 @@ public sealed record CompactFileAnalysis(
     string File,
     string? Namespace,
     IReadOnlyList<CompactTypeInfo> Types,
-    IReadOnlyList<string>? ParseErrors = null);
+    IReadOnlyList<string>? ParseErrors = null,
+    string? GraphStatus = null);
 
 public sealed record CompactTypeInfo(
     string Name,
     string Kind,
     string? Base = null,
     IReadOnlyList<string>? Implements = null,
-    IReadOnlyList<string>? Methods = null);
+    IReadOnlyList<string>? Methods = null,
+    TypeGraphContext? Graph = null);

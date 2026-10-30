@@ -2,33 +2,20 @@ using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
+using ContextManager.Mcp;
 using ContextManager.Mcp.Serialization;
 using ContextManager.Mcp.Tools;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ContextManager.Analysis.Tests.Tools;
 
-/// <summary>
-/// Tests for graph query tools: GraphGetDependenciesTool, GraphImpactAnalysisTool, GraphPathFindTool.
-/// All graphs are built by hand — no Roslyn or MSBuild involved.
-/// </summary>
 [TestClass]
-public class GraphQueryToolTests
+public class GraphQueryToolTests : FixtureTest
 {
-    private readonly List<string> _directories = [];
-
-    [TestCleanup]
-    public void DeleteGraphDirectories()
-    {
-        foreach (var directory in _directories)
-            Directory.Delete(directory, true);
-    }
-
     private string PersistGraph(GraphStore store)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"context-manager-query-{Guid.NewGuid():N}");
-        _directories.Add(directory);
-        var solutionPath = Path.Combine(directory, "Sample.sln");
+        var solutionPath = Path.Combine(NewTempDirectory(), "Sample.sln");
         WriteGraph(solutionPath, store);
         return solutionPath;
     }
@@ -648,5 +635,132 @@ public class GraphQueryToolTests
 
         var result = JsonSerializer.Deserialize<GraphImpactResult>(json, AnalysisJson.Options);
         CollectionAssert.AreEqual(new[] { "Derived" }, result!.AffectedIds.ToList());
+    }
+
+    // ── File paths on graph results ───────────────────────────────────────────
+
+    [TestMethod]
+    public async Task GraphGetDependencies_NeighborWithDeclaringFile_ReturnsFile()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(new GraphNode("A", "Class", "/src/A.cs"), new GraphNode("B", "Class", "/src/B.cs"), "CALLS"));
+        store.AddEdge(new GraphEdge(new GraphNode("A", "Class", "/src/A.cs"), new GraphNode("NoFile", "Class"), "CALLS"));
+        var solutionPath = PersistGraph(store);
+
+        var json = await new GraphGetDependenciesTool(new GraphRegistry()).GraphGetDependenciesAsync(solutionPath, "A");
+
+        var neighbors = JsonSerializer.Deserialize<List<GraphNodeContract>>(json, AnalysisJson.Options)!;
+        Assert.AreEqual("/src/B.cs", neighbors.Single(n => n.Id == "B").File);
+        Assert.IsNull(neighbors.Single(n => n.Id == "NoFile").File);
+        Assert.IsFalse(json.Contains("\"file\":null", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task GraphImpactAnalysis_AffectedFiles_MapReturnedIdsOnly()
+    {
+        var store = new GraphStore();
+        store.AddEdge(new GraphEdge(new GraphNode("B", "Class", "/src/B.cs"), new GraphNode("C", "Class", "/src/C.cs"), "CALLS"));
+        store.AddEdge(new GraphEdge(new GraphNode("A", "Class", "/src/A.cs"), new GraphNode("B", "Class", "/src/B.cs"), "CALLS"));
+        var solutionPath = PersistGraph(store);
+        var tool = new GraphImpactAnalysisTool(new GraphRegistry());
+
+        var capped = JsonSerializer.Deserialize<GraphImpactResult>(await tool.GraphImpactAnalysisAsync(solutionPath, "C", maxResults: 1), AnalysisJson.Options)!;
+        var none = await tool.GraphImpactAnalysisAsync(solutionPath, "A");
+
+        CollectionAssert.AreEqual(new[] { "B" }, capped.AffectedIds.ToList());
+        CollectionAssert.AreEqual(new[] { "B" }, capped.AffectedFiles!.Keys.ToList());
+        Assert.AreEqual("/src/B.cs", capped.AffectedFiles["B"]);
+        Assert.IsFalse(none.Contains("affectedFiles", StringComparison.Ordinal));
+    }
+
+    // ── Automatic synchronization ─────────────────────────────────────────────
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task GraphQueryTools_SolutionWithoutGraphJson_BuildGraphAndReturnFiles()
+    {
+        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
+        var solutionPath = Path.Combine(directory, "Incremental.sln");
+        var registry = new GraphRegistry();
+        var synchronizer = CreateSynchronizer(registry);
+
+        var dependencies = await new GraphGetDependenciesTool(registry, synchronizer)
+            .GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Consumer.Client");
+        var impact = await new GraphImpactAnalysisTool(registry, synchronizer)
+            .GraphImpactAnalysisAsync(solutionPath, "IncrementalFixtures.Core.Sender");
+        var path = await new GraphPathFindTool(registry, synchronizer)
+            .GraphPathFindAsync(solutionPath, "IncrementalFixtures.Consumer.Client", "IncrementalFixtures.Core.Sender");
+
+        Assert.IsTrue(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
+        var sender = JsonSerializer.Deserialize<List<GraphNodeContract>>(dependencies, AnalysisJson.Options)!
+            .Single(n => n.Id == "IncrementalFixtures.Core.Sender");
+        Assert.AreEqual(Path.Combine(directory, "Core", "Sender.cs"), sender.File);
+        var impactResult = JsonSerializer.Deserialize<GraphImpactResult>(impact, AnalysisJson.Options)!;
+        CollectionAssert.Contains(impactResult.AffectedIds.ToList(), "IncrementalFixtures.Consumer.Client");
+        Assert.AreEqual(Path.Combine(directory, "Consumer", "Client.cs"), impactResult.AffectedFiles!["IncrementalFixtures.Consumer.Client"]);
+        CollectionAssert.AreEqual(new[] { "IncrementalFixtures.Consumer.Client", "IncrementalFixtures.Core.Sender" },
+            JsonSerializer.Deserialize<List<string>>(path, AnalysisJson.Options));
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task GraphGetDependencies_SourceChangedAfterScan_QueriesUpdatedGraph()
+    {
+        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
+        var solutionPath = Path.Combine(directory, "Incremental.sln");
+        var registry = new GraphRegistry();
+        var synchronizer = CreateSynchronizer(registry);
+        var tool = new GraphGetDependenciesTool(registry, synchronizer);
+        var before = await tool.GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Core.Sender");
+        StringAssert.Contains(before, "IncrementalFixtures.Core.Audit");
+
+        var sender = Path.Combine(directory, "Core", "Sender.cs");
+        FixtureCopy.Edit(sender, "        Audit.Record();\n", "");
+        var after = await tool.GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Core.Sender");
+
+        Assert.IsFalse(after.Contains("IncrementalFixtures.Core.Audit", StringComparison.Ordinal), after);
+    }
+
+    [TestMethod]
+    public async Task GraphQueryTools_SynchronizedNoSolutionNoGraph_ReturnGraphNotFound()
+    {
+        var registry = new GraphRegistry();
+        var synchronizer = CreateSynchronizer(registry);
+        var solutionPath = Path.Combine(Path.GetTempPath(), $"context-manager-missing-{Guid.NewGuid():N}", "Missing.sln");
+
+        var results = new[]
+        {
+            await new GraphGetDependenciesTool(registry, synchronizer).GraphGetDependenciesAsync(solutionPath, "A"),
+            await new GraphImpactAnalysisTool(registry, synchronizer).GraphImpactAnalysisAsync(solutionPath, "A"),
+            await new GraphPathFindTool(registry, synchronizer).GraphPathFindAsync(solutionPath, "A", "B"),
+        };
+
+        foreach (var json in results)
+            Assert.AreEqual("graph_not_found", JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options)?.Code);
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
+    public async Task GraphTools_CreatedFromServerRegistration_SynchronizeBeforeAnswering()
+    {
+        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
+        var solutionPath = Path.Combine(directory, "Incremental.sln");
+        var services = Own(new ServiceCollection().AddContextManagerServices().BuildServiceProvider());
+
+        var scan = await ActivatorUtilities.CreateInstance<ProjectScanTool>(services).ProjectScanAsync(solutionPath);
+        FixtureCopy.Edit(Path.Combine(directory, "Core", "Sender.cs"), "        Audit.Record();\n", "");
+        var dependencies = await ActivatorUtilities.CreateInstance<GraphGetDependenciesTool>(services)
+            .GraphGetDependenciesAsync(solutionPath, "IncrementalFixtures.Core.Sender");
+        var impact = await ActivatorUtilities.CreateInstance<GraphImpactAnalysisTool>(services)
+            .GraphImpactAnalysisAsync(solutionPath, "IncrementalFixtures.Core.Audit");
+        var path = await ActivatorUtilities.CreateInstance<GraphPathFindTool>(services)
+            .GraphPathFindAsync(solutionPath, "IncrementalFixtures.Core.Sender", "IncrementalFixtures.Core.Audit");
+
+        StringAssert.StartsWith(scan, "Scan partial.");
+        Assert.IsFalse(dependencies.Contains("IncrementalFixtures.Core.Audit", StringComparison.Ordinal), dependencies);
+        CollectionAssert.DoesNotContain(
+            JsonSerializer.Deserialize<GraphImpactResult>(impact, AnalysisJson.Options)!.AffectedIds.ToList(),
+            "IncrementalFixtures.Core.Sender");
+        Assert.AreEqual("no_path", JsonSerializer.Deserialize<AnalysisError>(path, AnalysisJson.Options)?.Code, path);
     }
 }

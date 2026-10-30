@@ -39,3 +39,13 @@ class Service
         payload.Touch();
     }
 }
+
+class LocalFunctionHost
+{
+    public void Outer()
+    {
+        Inner();
+
+        void Inner() => Utility.Run();
+    }
+}

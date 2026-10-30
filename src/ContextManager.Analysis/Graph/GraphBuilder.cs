@@ -1,8 +1,7 @@
-using ContextManager.Analysis.Extraction;
+using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.MSBuild;
 
 namespace ContextManager.Analysis.Graph;
 
@@ -15,136 +14,77 @@ public class GraphBuilder
         _edgeExtractor = edgeExtractor;
     }
 
-    public async Task<GraphBuildResult> BuildWithReportAsync(
-        GraphStore store,
-        string solutionPath,
-        Func<string, CancellationToken, Task>? persistSnapshot,
+    /// <summary>
+    /// Extracts the contribution of each selected document of an evaluated C# project (every
+    /// document when <paramref name="selectedDocuments"/> is null). A document maps to null when it
+    /// is skipped: generated/obj/bin sources, or a tree that cannot be read. When the project has no
+    /// compilation, nothing is extracted and <see cref="GraphProjectExtraction.Loaded"/> is false.
+    /// </summary>
+    public async Task<GraphProjectExtraction> ExtractProjectAsync(
+        Project project,
+        string projectKey,
+        int projectOrder,
+        IReadOnlySet<DocumentId>? selectedDocuments,
         CancellationToken ct = default)
     {
-        await store.BeginRebuildAsync(ct);
-        var rebuildActive = true;
-        try
+        var compilationTimer = Stopwatch.StartNew();
+        var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
+        compilationTimer.Stop();
+
+        var documents = new Dictionary<DocumentId, GraphDocumentRecord?>();
+        if (compilation is null)
+            return new GraphProjectExtraction(false, documents, compilationTimer.Elapsed, TimeSpan.Zero);
+
+        var extractionTimer = Stopwatch.StartNew();
+        for (var documentOrder = 0; documentOrder < project.DocumentIds.Count; documentOrder++)
         {
-            using var workspace = MSBuildWorkspace.Create();
-            var diagnostics = new List<GraphBuildDiagnostic>();
-            workspace.WorkspaceFailed += (_, args) =>
-            {
-                lock (diagnostics)
-                    diagnostics.Add(new GraphBuildDiagnostic(args.Diagnostic.Kind.ToString(), args.Diagnostic.Message));
-            };
+            ct.ThrowIfCancellationRequested();
+            var documentId = project.DocumentIds[documentOrder];
+            if (selectedDocuments is not null && !selectedDocuments.Contains(documentId))
+                continue;
 
-            var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
-            var totalProjects = solution.ProjectIds.Count;
-            var loadedProjects = 0;
-            var unsupportedProjects = 0;
-            var skippedProjects = 0;
-            var totalDocuments = 0;
-            var loadedDocuments = 0;
-            var skippedDocuments = 0;
-
-            foreach (var project in solution.Projects)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (project.Language != LanguageNames.CSharp)
-                {
-                    unsupportedProjects++;
-                    continue;
-                }
-
-                totalDocuments += project.DocumentIds.Count;
-                var compilation = await project.GetCompilationAsync(ct) as CSharpCompilation;
-                if (compilation is null)
-                {
-                    skippedProjects++;
-                    skippedDocuments += project.DocumentIds.Count;
-                    continue;
-                }
-
-                loadedProjects++;
-
-                foreach (var document in project.Documents)
-                {
-                    if (!IsSourceDocument(document.FilePath))
-                    {
-                        skippedDocuments++;
-                        continue;
-                    }
-
-                    var syntaxTree = await document.GetSyntaxTreeAsync(ct);
-                    if (syntaxTree is null)
-                    {
-                        skippedDocuments++;
-                        continue;
-                    }
-
-                    var root = await syntaxTree.GetRootAsync(ct) as CompilationUnitSyntax;
-                    if (root is null)
-                    {
-                        skippedDocuments++;
-                        continue;
-                    }
-
-                    var model = compilation.GetSemanticModel(syntaxTree);
-
-                    HarvestNodes(store, model, root, ct);
-
-                    var edges = _edgeExtractor.Extract(model, root, ct);
-                    foreach (var edge in edges)
-                        store.AddEdge(edge);
-
-                    loadedDocuments++;
-                }
-            }
-
-            List<GraphBuildDiagnostic> diagnosticSnapshot;
-            lock (diagnostics)
-                diagnosticSnapshot = diagnostics.ToList();
-            var hasFailures = diagnosticSnapshot.Any(d => d.Kind == WorkspaceDiagnosticKind.Failure.ToString());
-            var status = loadedProjects == 0 || loadedDocuments == 0
-                ? "failed"
-                : store.RebuildNodeCount == 0
-                    ? "empty"
-                    : hasFailures || unsupportedProjects > 0 || skippedDocuments > 0
-                        ? "partial"
-                        : "complete";
-
-            var result = new GraphBuildResult(
-                status,
-                totalProjects,
-                loadedProjects,
-                unsupportedProjects,
-                skippedProjects,
-                totalDocuments,
-                loadedDocuments,
-                skippedDocuments,
-                store.RebuildNodeCount,
-                store.RebuildEdgeCount,
-                diagnosticSnapshot);
-
-            if (status is "failed" or "empty")
-            {
-                store.AbortRebuild();
-                rebuildActive = false;
-                return result;
-            }
-
-            if (persistSnapshot is not null)
-                await persistSnapshot(store.SerializeRebuild(), ct);
-
-            store.CommitRebuild();
-            rebuildActive = false;
-            return result;
+            documents[documentId] = await ExtractDocumentAsync(
+                project.GetDocument(documentId)!, compilation, projectKey, projectOrder, documentOrder, ct);
         }
-        catch
-        {
-            if (rebuildActive)
-                store.AbortRebuild();
-            throw;
-        }
+
+        extractionTimer.Stop();
+        return new GraphProjectExtraction(true, documents, compilationTimer.Elapsed, extractionTimer.Elapsed);
     }
 
-    private static void HarvestNodes(GraphStore store, SemanticModel model, CompilationUnitSyntax root, CancellationToken ct)
+    private async Task<GraphDocumentRecord?> ExtractDocumentAsync(
+        Document document,
+        CSharpCompilation compilation,
+        string projectKey,
+        int projectOrder,
+        int documentOrder,
+        CancellationToken ct)
     {
+        if (!IsSourceDocument(document.FilePath))
+            return null;
+
+        var syntaxTree = await document.GetSyntaxTreeAsync(ct);
+        if (syntaxTree is null)
+            return null;
+
+        if (await syntaxTree.GetRootAsync(ct) is not CompilationUnitSyntax root)
+            return null;
+
+        var model = compilation.GetSemanticModel(syntaxTree);
+        var text = await document.GetTextAsync(ct);
+
+        return new GraphDocumentRecord(
+            projectKey,
+            Path.GetFullPath(document.FilePath!),
+            Convert.ToHexString(text.GetChecksum().AsSpan()),
+            projectOrder,
+            documentOrder,
+            HarvestNodes(model, root, document.FilePath, ct),
+            _edgeExtractor.Extract(model, root, ct));
+    }
+
+    private static IReadOnlyList<GraphNode> HarvestNodes(SemanticModel model, CompilationUnitSyntax root, string? filePath, CancellationToken ct)
+    {
+        var nodes = new List<GraphNode>();
         var typeDeclarations = root.DescendantNodes().OfType<TypeDeclarationSyntax>();
 
         foreach (var typeDecl in typeDeclarations)
@@ -153,40 +93,29 @@ public class GraphBuilder
             if (typeSymbol is null)
                 continue;
 
-            var typeNode = TypeNodeFor(typeSymbol);
+            var typeNode = NodeClassifier.NodeFor(typeSymbol, filePath);
             if (typeNode is null)
                 continue;
 
-            store.AddNode(typeNode);
+            nodes.Add(typeNode);
 
             foreach (var memberDecl in typeDecl.Members)
             {
-                switch (memberDecl)
+                ISymbol? memberSymbol = memberDecl switch
                 {
-                    case MethodDeclarationSyntax methodDecl:
-                    {
-                        var methodSymbol = model.GetDeclaredSymbol(methodDecl, ct) as IMethodSymbol;
-                        if (methodSymbol is null) continue;
-                        var methodNode = NodeClassifier.NodeFor(methodSymbol);
-                        if (methodNode is not null)
-                            store.AddNode(methodNode);
-                        break;
-                    }
-                    case PropertyDeclarationSyntax propertyDecl:
-                    {
-                        var propSymbol = model.GetDeclaredSymbol(propertyDecl, ct) as IPropertySymbol;
-                        if (propSymbol is null) continue;
-                        var propNode = NodeClassifier.NodeFor(propSymbol);
-                        if (propNode is not null)
-                            store.AddNode(propNode);
-                        break;
-                    }
-                }
+                    MethodDeclarationSyntax methodDecl => model.GetDeclaredSymbol(methodDecl, ct),
+                    PropertyDeclarationSyntax propertyDecl => model.GetDeclaredSymbol(propertyDecl, ct),
+                    _ => null
+                };
+
+                var memberNode = memberSymbol is null ? null : NodeClassifier.NodeFor(memberSymbol, filePath);
+                if (memberNode is not null)
+                    nodes.Add(memberNode);
             }
         }
-    }
 
-    private static GraphNode? TypeNodeFor(INamedTypeSymbol symbol) => NodeClassifier.NodeFor(symbol);
+        return nodes;
+    }
 
     internal static bool IsSourceDocument(string? filePath)
     {

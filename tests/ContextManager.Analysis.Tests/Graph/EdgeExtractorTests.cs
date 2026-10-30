@@ -513,6 +513,31 @@ public class EdgeExtractorTests
     }
 
     [TestMethod]
+    public void Extract_LocalFunctionCall_IsNotEmittedAndItsBodyStaysOnTheContainingMethod()
+    {
+        var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
+
+        var edges = CreateExtractor().Extract(model, root);
+
+        Assert.IsFalse(edges.Any(e => e.Source.Id.Contains("Inner") || e.Target.Id.Contains("Inner")),
+            "Local functions must not become graph nodes or CALLS targets.");
+        Assert.IsTrue(edges.Any(e => e.Type == "CALLS" && e.Source.Id.Contains("LocalFunctionHost.Outer") &&
+            e.Target.Id.Contains("Utility.Run")), "Calls inside a local function belong to the containing method.");
+    }
+
+    [TestMethod]
+    public void Extract_EdgeEndpoints_CarryDeclaringFile()
+    {
+        var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
+
+        var edges = CreateExtractor().Extract(model, root);
+
+        var call = edges.First(e => e.Type == "CALLS" && e.Target.Id.Contains("Utility.Run"));
+        Assert.AreEqual(Path.GetFullPath(GraphCorrectnessCasesPath), call.Target.File);
+        Assert.AreEqual(Path.GetFullPath(GraphCorrectnessCasesPath), call.Source.File);
+    }
+
+    [TestMethod]
     public void Extract_PartialDeclarations_DeduplicateTriplesAcrossDocumentsInStore()
     {
         var paths = new[] { FixturePath("PartialConsumer.Part1.cs"), FixturePath("PartialConsumer.Part2.cs") };
