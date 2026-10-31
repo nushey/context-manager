@@ -1,6 +1,18 @@
 ## Context Manager MCP
 
-Call the Context Manager tools before reading or editing any C# file. Every tool is read-only and stateless.
+This repository has a prebuilt knowledge graph of its C# code. Queries answer in well under a second. Every tool is read-only and stateless.
+
+**Your first step on any question about C# code must be a Context Manager call, not `grep`, `rg`, `sed`, `cat` or a file read.** Text search misses usages through `var` and interfaces, and it confuses overloads and methods with the same name.
+
+| Question | Call first |
+|----------|------------|
+| Who calls, implements, injects or uses a type or method? | `graph_get_dependencies` on that type or method |
+| How does one type or method reach another? | `graph_path_find` between them |
+| What does a type expose and depend on? | `inspect_file` on its file |
+| What does a set of files have in common? | `inspect_context` on those files |
+
+- Method node IDs include parameter types, for example `MyApp.Services.IOrderService.GetOrderAsync(int)`. Query the type first; its result lists its neighbors' files.
+- Use `grep` or file reads only afterwards, to read method bodies at the files and line ranges the tools returned, or for non-C# files and string literals.
 
 ### Inspect files
 
@@ -30,7 +42,6 @@ Use the graph tools to find what to read before you read it. Start from the file
 | 1 | `inspect_file(path)` | Read the type; note its namespace and type name, which form its node ID |
 | 2 | `graph_get_dependencies(solutionPath, nodeId)` | Find adjacent files worth reading |
 | 3 | `inspect_file` on the `file` of relevant neighbors | Read only what you need |
-| 4 | `graph_impact_analysis(solutionPath, nodeId)` | Assess the blast radius before changing anything |
 
 **`graph_get_dependencies` results** have one entry per neighbor type and direction:
 
@@ -40,11 +51,5 @@ Use the graph tools to find what to read before you read it. Start from the file
 - `file`: the neighbor's declaring source file.
 
 The queried type's own members are never listed; use `inspect_file` for those.
-
-**`graph_impact_analysis`** returns `affectedIds` and maps each one to its file in `affectedFiles`. Use it to calibrate risk, not as a checklist to verify:
-
-- Few results: the change is contained; proceed normally.
-- Many results: the type's public contract is load-bearing; preserve it.
-- Do not inspect every returned node. Decide how conservative to be from the count and the direct callers.
 
 **`graph_path_find(solutionPath, sourceId, targetId)`**: use it to understand why two nodes are connected or to trace the dependency chain between two specific types.
