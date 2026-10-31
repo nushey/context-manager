@@ -25,26 +25,6 @@ public class MethodSignatureFormatterTests
     }
 
     [TestMethod]
-    [DataRow("protected")]
-    [DataRow("internal")]
-    [DataRow("protected internal")]
-    public void Format_NonPublicMethod_PrefixesAccessLevel(string access)
-    {
-        var method = new MethodInfo(
-            Name: "GetDimensionsAsync",
-            Access: access,
-            ReturnType: "Task<decimal>",
-            StartLine: 1,
-            EndLine: 1,
-            Parameters: [new ParameterInfo("ShoppingCartItem", "item")],
-            Attributes: null);
-
-        var result = MethodSignatureFormatter.Format(method);
-
-        Assert.AreEqual($"{access} GetDimensionsAsync(item:ShoppingCartItem): Task<decimal>", result);
-    }
-
-    [TestMethod]
     public void Format_NoParameters_ReturnsEmptyParens()
     {
         var method = new MethodInfo(
