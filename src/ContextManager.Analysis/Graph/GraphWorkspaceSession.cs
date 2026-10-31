@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -16,43 +15,39 @@ public sealed class GraphWorkspaceSession : IDisposable
         MSBuildWorkspace workspace,
         string solutionPath,
         Solution solution,
-        IReadOnlyList<GraphBuildDiagnostic> diagnostics,
+        bool hasWorkspaceFailures,
         IReadOnlyList<GraphTrackedFile> inputs,
         IReadOnlyList<string> candidateFiles,
-        IReadOnlyList<string> sourceRoots,
-        TimeSpan evaluation)
+        IReadOnlyList<string> sourceRoots)
     {
         _workspace = workspace;
         SolutionPath = solutionPath;
         Solution = solution;
-        Diagnostics = diagnostics;
+        HasWorkspaceFailures = hasWorkspaceFailures;
         Inputs = inputs;
         CandidateFiles = candidateFiles;
         SourceRoots = sourceRoots;
-        Evaluation = evaluation;
     }
 
     public string SolutionPath { get; }
     public Solution Solution { get; private set; }
-    public IReadOnlyList<GraphBuildDiagnostic> Diagnostics { get; }
+    public bool HasWorkspaceFailures { get; }
     public IReadOnlyList<GraphTrackedFile> Inputs { get; }
     public IReadOnlyList<string> CandidateFiles { get; }
     public IReadOnlyList<string> SourceRoots { get; }
-    public TimeSpan Evaluation { get; }
     public string? Revision { get; private set; }
 
     public static async Task<GraphWorkspaceSession> OpenAsync(string solutionPath, CancellationToken ct)
     {
         var evaluationStartedUtc = DateTime.UtcNow;
-        var timer = Stopwatch.StartNew();
         var workspace = MSBuildWorkspace.Create();
         try
         {
-            var diagnostics = new List<GraphBuildDiagnostic>();
+            var hasWorkspaceFailures = 0;
             workspace.RegisterWorkspaceFailedHandler(args =>
             {
-                lock (diagnostics)
-                    diagnostics.Add(new GraphBuildDiagnostic(args.Diagnostic.Kind.ToString(), args.Diagnostic.Message));
+                if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
+                    Interlocked.Exchange(ref hasWorkspaceFailures, 1);
             });
 
             var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
@@ -70,13 +65,8 @@ public sealed class GraphWorkspaceSession : IDisposable
                 .Select(input => configs.GetValueOrDefault(input.Path) ?? input)
                 .ToList();
             var candidates = ScanCandidateFiles(projectFiles, sourceRoots, evaluationStartedUtc);
-            timer.Stop();
 
-            List<GraphBuildDiagnostic> diagnosticSnapshot;
-            lock (diagnostics)
-                diagnosticSnapshot = diagnostics.ToList();
-
-            return new GraphWorkspaceSession(workspace, solutionPath, solution, diagnosticSnapshot, inputs, candidates, sourceRoots, timer.Elapsed);
+            return new GraphWorkspaceSession(workspace, solutionPath, solution, Volatile.Read(ref hasWorkspaceFailures) == 1, inputs, candidates, sourceRoots);
         }
         catch
         {

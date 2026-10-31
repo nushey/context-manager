@@ -1,5 +1,7 @@
 using ContextManager.Analysis.Models;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using TypeInfo = ContextManager.Analysis.Models.TypeInfo;
 
 namespace ContextManager.Analysis.Extraction;
 
@@ -59,15 +61,11 @@ public static class MemberExtractor
             Members: null);
     }
 
-
-    // Single rendering of a type's display name (identifier + type parameter list);
-    // CrossReferenceResolver must key its lookups with the exact same rendering.
     public static string RenderTypeName(TypeDeclarationSyntax node)
         => node.Identifier.ValueText + node.TypeParameterList?.ToString();
 
-    public static TypeInfo Build(TypeDeclarationSyntax node, bool isTopLevel)
+    public static TypeInfo Build(TypeDeclarationSyntax node, bool isTopLevel, SemanticModel? model = null)
     {
-        var bareName = node.Identifier.ValueText;
         var name = RenderTypeName(node);
         var access = AccessLevel.FromModifiers(node.Modifiers, isTopLevel);
         var attributes = AttributeExtractor.Render(node.AttributeLists);
@@ -75,7 +73,6 @@ public static class MemberExtractor
         var kind = node switch
         {
             InterfaceDeclarationSyntax => "interface",
-            RecordDeclarationSyntax r when r.ClassOrStructKeyword.ValueText == "struct" => "record",
             RecordDeclarationSyntax => "record",
             StructDeclarationSyntax => "struct",
             ClassDeclarationSyntax c when c.Modifiers.Any(m => m.ValueText == "static") => "static-class",
@@ -83,7 +80,7 @@ public static class MemberExtractor
             _ => "class"
         };
 
-        var (baseType, implements) = ExtractBaseList(node);
+        var (baseType, implements) = ExtractBaseList(node, model);
 
         var constructorDeps = NullIfEmpty(ExtractConstructorDependencies(node));
         var methods = NullIfEmpty(ExtractMethods(node));
@@ -93,15 +90,6 @@ public static class MemberExtractor
             node.ConstraintClauses
                 .Select(c => c.ToString())
                 .ToList());
-
-        // Only apply the DTO heuristic to plain classes and structs; records, interfaces,
-        // static and abstract classes keep their kind. Suffix matching needs the bare
-        // identifier — "PagedResponse<T>" must still end with "Response".
-        if (kind is "class" or "struct" && DtoDetector.IsDto(node, bareName))
-        {
-            kind = "dto";
-            properties = null;
-        }
 
         bool? isPartial = node.Modifiers.Any(m => m.ValueText == "partial") ? true : null;
 
@@ -121,37 +109,28 @@ public static class MemberExtractor
             Events: events);
     }
 
-    public static TypeInfo Build(RecordDeclarationSyntax node, bool isTopLevel)
-        => Build((TypeDeclarationSyntax)node, isTopLevel);
-
-    private static (string? baseType, IReadOnlyList<string> implements) ExtractBaseList(TypeDeclarationSyntax node)
+    private static (string? baseType, IReadOnlyList<string> implements) ExtractBaseList(TypeDeclarationSyntax node, SemanticModel? model)
     {
-        if (node.BaseList is null)
-            return (null, []);
-
-        var entries = node.BaseList.Types
-            .OfType<SimpleBaseTypeSyntax>()
-            .Select(t => t.Type.ToString())
-            .ToList();
-
+        var entries = node.BaseList?.Types.OfType<SimpleBaseTypeSyntax>().Select(t => t.Type).ToList() ?? [];
         if (entries.Count == 0)
             return (null, []);
 
-        // For classes: heuristic — first entry is base class unless it looks like an
-        // interface name: 'I' followed by uppercase (IRepository yes, IndexManager no)
-        if (node is ClassDeclarationSyntax && !LooksLikeInterfaceName(entries[0]))
-        {
-            var baseClass = entries[0];
-            var ifaces = entries.Skip(1).ToList();
-            return (baseClass, ifaces);
-        }
-
-        // Interfaces, structs, and classes whose first entry looks like an interface → all are implements
-        return (null, entries);
+        return IsBaseClass(node, entries[0], model)
+            ? (entries[0].ToString(), entries.Skip(1).Select(t => t.ToString()).ToList())
+            : (null, entries.Select(t => t.ToString()).ToList());
     }
 
-    private static bool LooksLikeInterfaceName(string typeName)
-        => typeName.Length >= 2 && typeName[0] == 'I' && char.IsUpper(typeName[1]);
+    public static bool IsBaseClass(TypeDeclarationSyntax node, TypeSyntax firstBaseType, SemanticModel? model)
+    {
+        if (node is not (ClassDeclarationSyntax or RecordDeclarationSyntax { ClassOrStructKeyword.ValueText: not "struct" }))
+            return false;
+
+        if (model?.GetTypeInfo(firstBaseType).Type is { TypeKind: not TypeKind.Error } resolved)
+            return resolved.TypeKind != TypeKind.Interface;
+
+        var name = firstBaseType.ToString();
+        return node is ClassDeclarationSyntax && !(name.Length >= 2 && name[0] == 'I' && char.IsUpper(name[1]));
+    }
 
     private static IReadOnlyList<Models.ParameterInfo> ExtractConstructorDependencies(TypeDeclarationSyntax node)
     {
@@ -170,21 +149,11 @@ public static class MemberExtractor
     private static IReadOnlyList<Models.MethodInfo> ExtractMethods(TypeDeclarationSyntax node)
     {
         var result = new List<Models.MethodInfo>();
-        bool isInterface = node is InterfaceDeclarationSyntax;
 
         foreach (var method in node.Members.OfType<MethodDeclarationSyntax>())
         {
             var explicitSpecifier = method.ExplicitInterfaceSpecifier;
-
-            // Explicit interface implementations are syntactically private but reachable
-            // through the interface — they belong to the contract, reported as public.
-            // Interface methods with no explicit modifier are implicitly public.
-            string methodAccess;
-            if (explicitSpecifier is not null || (isInterface && !method.Modifiers.Any()))
-                methodAccess = "public";
-            else
-                methodAccess = AccessLevel.FromModifiers(method.Modifiers, isTopLevelType: false);
-
+            var methodAccess = AccessLevel.OfMember(method, explicitSpecifier);
             if (methodAccess == "private")
                 continue;
 
@@ -216,21 +185,15 @@ public static class MemberExtractor
 
     private static IReadOnlyList<T>? NullIfEmpty<T>(IReadOnlyList<T> list) => list.Count == 0 ? null : list;
 
-    // EventFieldDeclarationSyntax is a MemberDeclarationSyntax, NOT a BasePropertyDeclarationSyntax,
-    // so field-style and accessor-style events are matched separately; a single pass over
-    // node.Members keeps both forms in declaration order.
     private static IReadOnlyList<Models.PropertyInfo> ExtractEvents(TypeDeclarationSyntax node)
     {
         var result = new List<Models.PropertyInfo>();
-        bool isInterface = node is InterfaceDeclarationSyntax;
 
         foreach (var member in node.Members)
         {
             if (member is EventFieldDeclarationSyntax eventField)
             {
-                var access = isInterface && !eventField.Modifiers.Any()
-                    ? "public"
-                    : AccessLevel.FromModifiers(eventField.Modifiers, isTopLevelType: false);
+                var access = AccessLevel.OfMember(eventField);
                 if (access == "private")
                     continue;
 
@@ -246,9 +209,7 @@ public static class MemberExtractor
             else if (member is EventDeclarationSyntax eventDecl)
             {
                 var explicitSpecifier = eventDecl.ExplicitInterfaceSpecifier;
-                var access = explicitSpecifier is not null
-                    ? "public"
-                    : AccessLevel.FromModifiers(eventDecl.Modifiers, isTopLevelType: false);
+                var access = AccessLevel.OfMember(eventDecl, explicitSpecifier);
                 if (access == "private")
                     continue;
 
@@ -291,14 +252,31 @@ public static class MemberExtractor
     {
         var result = new List<Models.PropertyInfo>();
 
+        if (node is RecordDeclarationSyntax { ParameterList: { } positionalParameters } record)
+        {
+            var declaredNames = node.Members.OfType<PropertyDeclarationSyntax>()
+                .Select(p => p.Identifier.ValueText)
+                .ToHashSet(StringComparer.Ordinal);
+            var isMutableStruct = record.ClassOrStructKeyword.ValueText == "struct"
+                && !record.Modifiers.Any(m => m.ValueText == "readonly");
+
+            foreach (var parameter in positionalParameters.Parameters)
+            {
+                if (parameter.Type is null || declaredNames.Contains(parameter.Identifier.ValueText))
+                    continue;
+
+                result.Add(new Models.PropertyInfo(
+                    Name: parameter.Identifier.ValueText,
+                    Type: parameter.Type.ToString(),
+                    Access: "public",
+                    Accessors: isMutableStruct ? "get; set;" : "get; init;"));
+            }
+        }
+
         foreach (var prop in node.Members.OfType<PropertyDeclarationSyntax>())
         {
             var explicitSpecifier = prop.ExplicitInterfaceSpecifier;
-
-            // Same rule as methods: explicit interface implementations are contract members.
-            var propAccess = explicitSpecifier is not null
-                ? "public"
-                : AccessLevel.FromModifiers(prop.Modifiers, isTopLevelType: false);
+            var propAccess = AccessLevel.OfMember(prop, explicitSpecifier);
             if (propAccess == "private")
                 continue;
 
@@ -327,7 +305,6 @@ public static class MemberExtractor
             if (!isConst && !(isStatic && isReadonly))
                 continue;
 
-            var fieldAccess = AccessLevel.FromModifiers(field.Modifiers, isTopLevelType: false);
             var typeName = field.Declaration.Type.ToString();
 
             foreach (var variable in field.Declaration.Variables)
@@ -335,7 +312,7 @@ public static class MemberExtractor
                 result.Add(new Models.PropertyInfo(
                     Name: variable.Identifier.ValueText,
                     Type: typeName,
-                    Access: fieldAccess));
+                    Access: "public"));
             }
         }
 

@@ -4,7 +4,6 @@ using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
 using ContextManager.Mcp.Serialization;
-using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -12,18 +11,10 @@ namespace ContextManager.Mcp.Tools;
 [McpServerToolType]
 public sealed class GraphGetDependenciesTool
 {
-    private readonly GraphRegistry _registry;
-    private readonly IGraphSynchronizer? _synchronizer;
+    private readonly IGraphSynchronizer _synchronizer;
 
-    public GraphGetDependenciesTool(GraphRegistry registry)
+    public GraphGetDependenciesTool(IGraphSynchronizer synchronizer)
     {
-        _registry = registry;
-    }
-
-    [ActivatorUtilitiesConstructor]
-    public GraphGetDependenciesTool(GraphRegistry registry, IGraphSynchronizer synchronizer)
-    {
-        _registry = registry;
         _synchronizer = synchronizer;
     }
 
@@ -33,13 +24,13 @@ public sealed class GraphGetDependenciesTool
         [Description("The ISymbol.ToDisplayString() ID of the node whose neighbors to retrieve.")] string nodeId,
         CancellationToken ct = default)
     {
-        var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_registry, _synchronizer, solutionPath, "graph_get_dependencies", ct);
+        var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_synchronizer, solutionPath, "graph_get_dependencies", ct);
         if (store is null)
             return error!;
 
         if (!store.TryGetNode(nodeId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", null),
                 AnalysisJson.Options);
 
         var neighbors = store.GetAggregatedNeighbors(nodeId, ct);

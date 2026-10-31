@@ -3,7 +3,6 @@ using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
 using ContextManager.Analysis.Models;
-using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
 namespace ContextManager.Mcp.Tools;
@@ -11,18 +10,10 @@ namespace ContextManager.Mcp.Tools;
 [McpServerToolType]
 public sealed class GraphPathFindTool
 {
-    private readonly GraphRegistry _registry;
-    private readonly IGraphSynchronizer? _synchronizer;
+    private readonly IGraphSynchronizer _synchronizer;
 
-    public GraphPathFindTool(GraphRegistry registry)
+    public GraphPathFindTool(IGraphSynchronizer synchronizer)
     {
-        _registry = registry;
-    }
-
-    [ActivatorUtilitiesConstructor]
-    public GraphPathFindTool(GraphRegistry registry, IGraphSynchronizer synchronizer)
-    {
-        _registry = registry;
         _synchronizer = synchronizer;
     }
 
@@ -33,18 +24,18 @@ public sealed class GraphPathFindTool
         [Description("The ISymbol.ToDisplayString() ID of the target node.")] string targetId,
         CancellationToken ct = default)
     {
-        var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_registry, _synchronizer, solutionPath, "graph_path_find", ct);
+        var (store, error) = await GraphSyncRunner.LoadForQueryAsync(_synchronizer, solutionPath, "graph_path_find", ct);
         if (store is null)
             return error!;
 
         if (!store.TryGetNode(sourceId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {sourceId}", sourceId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {sourceId}", null),
                 AnalysisJson.Options);
 
         if (!store.TryGetNode(targetId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {targetId}", targetId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {targetId}", null),
                 AnalysisJson.Options);
 
         var path = store.ShortestPath(sourceId, targetId, ct);

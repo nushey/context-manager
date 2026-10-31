@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
 
@@ -10,24 +9,13 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
     private readonly GraphBuilder _builder;
     private readonly GraphRegistry _registry;
     private readonly Action _ensureMsBuildRegistered;
-    private readonly Func<string, string, CancellationToken, Task> _writeFile;
     private readonly ConcurrentDictionary<string, GraphWorkspaceSession> _sessions = new(StringComparer.Ordinal);
 
     public GraphSynchronizer(GraphBuilder builder, GraphRegistry registry, Action ensureMsBuildRegistered)
-        : this(builder, registry, ensureMsBuildRegistered, GraphRegistry.WriteAtomicallyAsync)
-    {
-    }
-
-    public GraphSynchronizer(
-        GraphBuilder builder,
-        GraphRegistry registry,
-        Action ensureMsBuildRegistered,
-        Func<string, string, CancellationToken, Task> writeFile)
     {
         _builder = builder;
         _registry = registry;
         _ensureMsBuildRegistered = ensureMsBuildRegistered;
-        _writeFile = writeFile;
     }
 
     public async Task<GraphSyncResult?> SynchronizeAsync(string solutionPath, bool reevaluate, CancellationToken ct = default)
@@ -38,12 +26,7 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
             return null;
 
         using var writer = await _registry.AcquireWriterAsync(solutionPath, ct);
-        while (true)
-        {
-            var result = await TrySynchronizeAsync(solutionPath, graphPath, reevaluate, ct);
-            if (result is not null)
-                return result;
-        }
+        return await SynchronizeLockedAsync(solutionPath, graphPath, reevaluate, ct);
     }
 
     public void Dispose()
@@ -54,34 +37,29 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
         _sessions.Clear();
     }
 
-    private async Task<GraphSyncResult?> TrySynchronizeAsync(string solutionPath, string graphPath, bool reevaluate, CancellationToken ct)
+    private async Task<GraphSyncResult> SynchronizeLockedAsync(string solutionPath, string graphPath, bool reevaluate, CancellationToken ct)
     {
         var phase = "graph_load";
         GraphWorkspaceSession? opened = null;
         try
         {
-            var version = GraphRegistry.ReadVersion(graphPath);
-            var current = (version.Exists ? _registry.TryLoad(solutionPath)?.Capture() : null) ?? new GraphStore();
-            var baseline = current.HasProvenance ? current.Baseline : null;
+            var current = _registry.TryLoad(solutionPath)?.Capture() ?? new GraphStore();
+            var baseline = current.Baseline;
 
             phase = "freshness";
-            var freshnessTimer = Stopwatch.StartNew();
             var freshness = baseline is null || reevaluate
                 ? (EvaluationChanged: true, ChangedFiles: (IReadOnlyList<string>)[])
                 : GraphWorkspaceSession.CheckFreshness(baseline);
-            freshnessTimer.Stop();
 
             if (!freshness.EvaluationChanged && freshness.ChangedFiles.Count == 0)
             {
-                return new GraphSyncResult(current, Report(baseline!, current), false, [],
-                    new GraphSyncTimings(freshnessTimer.Elapsed, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero));
+                return new GraphSyncResult(current, Report(baseline!, current));
             }
 
             phase = "msbuild_registration";
             _ensureMsBuildRegistered();
 
             phase = "solution_evaluation_and_extraction";
-            var evaluationTimer = Stopwatch.StartNew();
             _sessions.TryGetValue(graphPath, out var session);
             var warm = !freshness.EvaluationChanged && session is not null &&
                        session.Revision == current.Revision && session.SolutionPath == solutionPath;
@@ -99,23 +77,16 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
                 selection = await opened.SelectChangedProjectsAsync(baseline, ct);
             }
 
-            evaluationTimer.Stop();
-            var evaluationTime = warm ? TimeSpan.Zero : evaluationTimer.Elapsed;
             var active = opened ?? session!;
 
             var previousStates = baseline?.Projects.ToDictionary(p => p.Key, StringComparer.Ordinal)
                                  ?? new Dictionary<string, GraphProjectState>(StringComparer.Ordinal);
-            var existingByProject = current.HasProvenance
-                ? current.Documents.Values
-                    .GroupBy(d => d.ProjectKey, StringComparer.Ordinal)
-                    .ToDictionary(g => g.Key, g => g.ToDictionary(d => d.Path, StringComparer.Ordinal), StringComparer.Ordinal)
-                : new Dictionary<string, Dictionary<string, GraphDocumentRecord>>(StringComparer.Ordinal);
+            var existingByProject = current.Documents.Values
+                .GroupBy(d => d.ProjectKey, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.ToDictionary(d => d.Path, StringComparer.Ordinal), StringComparer.Ordinal);
 
             var records = new List<GraphDocumentRecord>();
             var projectStates = new List<GraphProjectState>();
-            var extractedDocuments = new List<string>();
-            var compilationTime = warm ? evaluationTimer.Elapsed : TimeSpan.Zero;
-            var extractionTime = TimeSpan.Zero;
             var projectOrder = -1;
 
             foreach (var project in solution.Projects)
@@ -133,12 +104,6 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
                     ? await _builder.ExtractProjectAsync(project, projectKey, projectOrder, selectedDocuments, ct)
                     : null;
 
-                if (extraction is not null)
-                {
-                    compilationTime += extraction.Compilation;
-                    extractionTime += extraction.Extraction;
-                }
-
                 var loaded = extraction?.Loaded ?? previousStates.GetValueOrDefault(projectKey)?.Loaded ?? false;
                 var existing = existingByProject.GetValueOrDefault(projectKey);
                 var extractedPaths = new HashSet<string>(StringComparer.Ordinal);
@@ -153,7 +118,6 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
 
                         records.Add(produced);
                         extractedPaths.Add(produced.Path);
-                        extractedDocuments.Add(produced.Path);
                         continue;
                     }
 
@@ -173,48 +137,35 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
                 projectStates.Add(await GraphWorkspaceSession.DescribeProjectAsync(project, loaded, extractedPaths.Contains, ct));
             }
 
-            var newBaseline = new GraphBaseline(solutionPath, projectStates, active.Inputs, active.CandidateFiles, active.Diagnostics, active.SourceRoots);
-            var fromEmpty = !current.HasProvenance;
+            var newBaseline = new GraphBaseline(solutionPath, projectStates, active.Inputs, active.CandidateFiles, active.HasWorkspaceFailures, active.SourceRoots);
             var finalKeys = records.Select(r => r.Key).ToHashSet();
-            var removed = fromEmpty ? [] : current.Documents.Keys.Where(k => !finalKeys.Contains(k)).ToList();
+            var removed = current.Documents.Keys.Where(k => !finalKeys.Contains(k)).ToList();
             var upserts = records
-                .Where(r => fromEmpty || !current.Documents.TryGetValue(r.Key, out var old) || !ReferenceEquals(old, r))
+                .Where(r => !current.Documents.TryGetValue(r.Key, out var old) || !ReferenceEquals(old, r))
                 .ToList();
 
-            if (!fromEmpty && removed.Count == 0 && upserts.Count == 0 && SameBaseline(baseline!, newBaseline))
+            if (baseline is not null && removed.Count == 0 && upserts.Count == 0 && SameBaseline(baseline, newBaseline))
             {
                 active.Advance(solution, current.Revision);
                 Adopt(graphPath, active);
                 opened = null;
-                return new GraphSyncResult(current, Report(newBaseline, current), false, extractedDocuments,
-                    new GraphSyncTimings(freshnessTimer.Elapsed, evaluationTime, compilationTime, extractionTime, TimeSpan.Zero, TimeSpan.Zero));
+                return new GraphSyncResult(current, Report(newBaseline, current));
             }
 
             phase = "index_update";
-            var indexTimer = Stopwatch.StartNew();
-            var candidate = current.Stage(removed, upserts, newBaseline, fromEmpty);
-            indexTimer.Stop();
+            var candidate = current.Stage(removed, upserts, newBaseline);
 
             var report = Report(newBaseline, candidate);
-            var timings = new GraphSyncTimings(freshnessTimer.Elapsed, evaluationTime, compilationTime, extractionTime, indexTimer.Elapsed, TimeSpan.Zero);
             if (report.Status is "failed" or "empty")
-                return new GraphSyncResult(current, report, false, extractedDocuments, timings);
+                return new GraphSyncResult(current, report);
 
             phase = "persistence";
-            var persistenceTimer = Stopwatch.StartNew();
-            if (!await _registry.SaveAsync(solutionPath, candidate, version, _writeFile, ct))
-            {
-                if (_sessions.TryRemove(graphPath, out var stale) && !ReferenceEquals(stale, opened))
-                    stale.Dispose();
+            await _registry.SaveAsync(solutionPath, candidate, ct);
 
-                return null;
-            }
-
-            persistenceTimer.Stop();
             active.Advance(solution, candidate.Revision);
             Adopt(graphPath, active);
             opened = null;
-            return new GraphSyncResult(candidate, report, true, extractedDocuments, timings with { Persistence = persistenceTimer.Elapsed });
+            return new GraphSyncResult(candidate, report);
         }
         catch (Exception ex) when (ex is not GraphSyncException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
@@ -245,12 +196,11 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
         var loadedDocuments = csharpProjects.Where(p => p.Loaded).Sum(p => p.Documents.Count(d => d.Extracted));
         var unsupportedProjects = baseline.Projects.Count - csharpProjects.Count;
         var skippedDocuments = totalDocuments - loadedDocuments;
-        var hasFailures = baseline.Diagnostics.Any(d => d.Kind == WorkspaceDiagnosticKind.Failure.ToString());
         var status = loadedProjects == 0 || loadedDocuments == 0
             ? "failed"
             : graph.NodeCount == 0
                 ? "empty"
-                : hasFailures || unsupportedProjects > 0 || skippedDocuments > 0
+                : baseline.HasWorkspaceFailures || unsupportedProjects > 0 || skippedDocuments > 0
                     ? "partial"
                     : "complete";
 
@@ -264,7 +214,6 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
             loadedDocuments,
             skippedDocuments,
             graph.NodeCount,
-            graph.EdgeCount,
-            baseline.Diagnostics);
+            graph.EdgeCount);
     }
 }

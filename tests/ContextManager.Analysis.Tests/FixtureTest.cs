@@ -12,6 +12,7 @@ public abstract class FixtureTest
 
     private readonly List<string> _directories = [];
     private readonly List<IDisposable> _disposables = [];
+    private readonly Dictionary<GraphSynchronizer, GraphRegistry> _registries = [];
 
     [TestCleanup]
     public void DeleteFixtureState()
@@ -40,8 +41,14 @@ public abstract class FixtureTest
         return disposable;
     }
 
-    protected GraphSynchronizer CreateSynchronizer(GraphRegistry registry, Func<string, string, CancellationToken, Task>? writeFile = null) =>
-        Own(new GraphSynchronizer(new GraphBuilder(new EdgeExtractor()), registry, EnsureMsBuild, writeFile ?? GraphRegistry.WriteAtomicallyAsync));
+    protected GraphSynchronizer CreateSynchronizer(GraphRegistry registry)
+    {
+        var synchronizer = Own(new GraphSynchronizer(new GraphBuilder(new EdgeExtractor()), registry, EnsureMsBuild));
+        _registries[synchronizer] = registry;
+        return synchronizer;
+    }
+
+    protected GraphRegistry RegistryOf(GraphSynchronizer synchronizer) => _registries[synchronizer];
 
     private string Track(string directory)
     {

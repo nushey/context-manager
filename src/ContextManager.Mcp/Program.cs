@@ -15,22 +15,6 @@ if (args.Length == 1 && (args[0].Equals("--version", StringComparison.OrdinalIgn
     return;
 }
 
-if (args.Contains("--diagnose-msbuild", StringComparer.OrdinalIgnoreCase))
-{
-    try
-    {
-        MsBuildBootstrap.EnsureRegistered();
-        Console.Error.WriteLine(MsBuildBootstrap.DescribeRegistration());
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine(ex);
-        Environment.ExitCode = 1;
-    }
-
-    return;
-}
-
 if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCase))
 {
     var yes = args.Skip(1).Any(arg => arg is "-y" or "--yes");

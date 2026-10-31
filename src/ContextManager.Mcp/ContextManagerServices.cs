@@ -18,6 +18,5 @@ public static class ContextManagerServices
         .AddSingleton<IGraphSynchronizer>(provider => new GraphSynchronizer(
             provider.GetRequiredService<GraphBuilder>(),
             provider.GetRequiredService<GraphRegistry>(),
-            GraphSyncRunner.EnsureMsBuildRegistered))
-        .AddSingleton<IGraphEnricher, GraphEnricher>();
+            MsBuildBootstrap.EnsureRegistered));
 }

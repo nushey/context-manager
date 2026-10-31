@@ -36,5 +36,5 @@ public class GenericProcessor
     }
 }
 
-// Record with primary constructor — kind should be "record", constructorDependencies from primary params
+// Record with primary constructor — kind should be "record", positional parameters reported as properties
 public record OrderSummary(string OrderId, decimal Total, string? Notes);

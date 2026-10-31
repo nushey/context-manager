@@ -35,16 +35,6 @@ public class MemberExtractorModernCSharpTests
             .First(t => t.Identifier.ValueText == name);
     }
 
-    private static RecordDeclarationSyntax GetRecordByName(string name)
-    {
-        var members = LoadFixtureMembers();
-        return members
-            .OfType<RecordDeclarationSyntax>()
-            .First(r => r.Identifier.ValueText == name);
-    }
-
-    // ── partial class ─────────────────────────────────────────────────────────
-
     [TestMethod]
     public void PartialClass_IsPartialIsTrue()
     {
@@ -62,8 +52,6 @@ public class MemberExtractorModernCSharpTests
 
         Assert.IsNull(result.IsPartial);
     }
-
-    // ── nullable properties and parameters ───────────────────────────────────
 
     [TestMethod]
     public void NullableProperty_TypePreservesQuestionMark()
@@ -85,8 +73,6 @@ public class MemberExtractorModernCSharpTests
         var param = method.Parameters!.First();
         Assert.AreEqual("string?", param.Type);
     }
-
-    // ── required properties ───────────────────────────────────────────────────
 
     [TestMethod]
     public void RequiredProperty_IsRequiredIsTrue()
@@ -110,8 +96,6 @@ public class MemberExtractorModernCSharpTests
         var phoneProp = result.Properties!.First(p => p.Name == "PhoneNumber");
         Assert.IsNull(phoneProp.IsRequired);
     }
-
-    // ── generic constraints ───────────────────────────────────────────────────
 
     [TestMethod]
     public void MethodWithSingleConstraint_GenericConstraintsPopulated()
@@ -146,32 +130,5 @@ public class MemberExtractorModernCSharpTests
 
         var processMethod = result.Methods!.First(m => m.Name == "Process");
         Assert.IsNull(processMethod.GenericConstraints);
-    }
-
-    // ── record with primary constructor ───────────────────────────────────────
-
-    [TestMethod]
-    public void Record_KindIsRecord()
-    {
-        var node = GetRecordByName("OrderSummary");
-        var result = MemberExtractor.Build(node, isTopLevel: true);
-
-        Assert.AreEqual("record", result.Kind);
-    }
-
-    [TestMethod]
-    public void Record_PrimaryConstructorParametersInConstructorDependencies()
-    {
-        var node = GetRecordByName("OrderSummary");
-        var result = MemberExtractor.Build(node, isTopLevel: true);
-
-        Assert.IsNotNull(result.ConstructorDependencies);
-        Assert.AreEqual(3, result.ConstructorDependencies.Count);
-        Assert.AreEqual("string", result.ConstructorDependencies[0].Type);
-        Assert.AreEqual("OrderId", result.ConstructorDependencies[0].Name);
-        Assert.AreEqual("decimal", result.ConstructorDependencies[1].Type);
-        Assert.AreEqual("Total", result.ConstructorDependencies[1].Name);
-        Assert.AreEqual("string?", result.ConstructorDependencies[2].Type);
-        Assert.AreEqual("Notes", result.ConstructorDependencies[2].Name);
     }
 }
