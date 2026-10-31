@@ -88,6 +88,8 @@ public class EdgeExtractorTests
     [DataRow("IsPayment", "TypeTestFixtures.IPaymentProvider")]
     [DataRow("IsNotAudited", "TypeTestFixtures.IAuditedPlugin")]
     [DataRow("RepositoryDefinition", "TypeTestFixtures.IRepository<TEntity, TKey>")]
+    [DataRow("IsTaxProvider", "TypeTestFixtures.ITaxProvider")]
+    [DataRow("IsPickupBatch", "TypeTestFixtures.IPickupProvider")]
     public void Extract_TypeTestedInMethodBody_EmitsReferencesEdge(string method, string targetId)
     {
         var (model, root) = ParseWithCompilation([TypeTestReferencesPath]);
@@ -95,11 +97,26 @@ public class EdgeExtractorTests
         var edges = CreateExtractor().Extract(model, root).Edges;
 
         Assert.IsTrue(
-            edges.Any(e => e.Type == "REFERENCES"
-                && e.Source.Id.StartsWith($"TypeTestFixtures.PluginInspector.{method}(", StringComparison.Ordinal)
-                && e.Target.Id == targetId),
+            HasMethodReference(edges, method, targetId),
             $"Expected REFERENCES edge from {method} to {targetId}. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
+
+    [TestMethod]
+    public void Extract_ConstantTestedInMethodBody_EmitsNoReferencesEdgeToItsType()
+    {
+        var (model, root) = ParseWithCompilation([TypeTestReferencesPath]);
+
+        var edges = CreateExtractor().Extract(model, root).Edges;
+
+        Assert.IsFalse(
+            HasMethodReference(edges, "IsMissing", "TypeTestFixtures.IPlugin"),
+            $"Expected no REFERENCES edge from IsMissing to IPlugin. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    private static bool HasMethodReference(IReadOnlyList<GraphEdge> edges, string method, string targetId) =>
+        edges.Any(e => e.Type == "REFERENCES"
+            && e.Source.Id.StartsWith($"TypeTestFixtures.PluginInspector.{method}(", StringComparison.Ordinal)
+            && e.Target.Id == targetId);
 
     [TestMethod]
     public void Extract_BclTypes_NoEdgesEmitted()
