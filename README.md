@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.nushey/context-manager -->
+
 <h1 align="center">ContextManager</h1>
 
 <p align="center">

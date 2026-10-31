@@ -19,7 +19,7 @@ set -euo pipefail
 #   A. Preflight     — inputs, tooling, remote, tag/version/branch state
 #   B. Push source   — push the feature/fix branch
 #   C. Integrate     — merge it --no-ff into dev (local), test
-#   D. Release       — release/vX.Y.Z from dev, bump <Version>, commit
+#   D. Release       — release/vX.Y.Z from dev, bump <Version> and server.json, commit
 #   E. Merge main    — main fast-forwarded to origin, --no-ff merge of release
 #   F. Package       — rebuild and test the merged tree, pack, verify nupkg
 #   G. Tag           — annotated vX.Y.Z on the merge commit
@@ -29,6 +29,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 CSPROJ="src/ContextManager.Mcp/ContextManager.Mcp.csproj"
+SERVER_JSON="server.json"
 PACKAGE_ID="ContextManager"
 NUGET_SOURCE="https://api.nuget.org/v3/index.json"
 REMOTE="origin"
@@ -224,7 +225,9 @@ git checkout --quiet -b "$RELEASE_BRANCH" dev
 RELEASE_CREATED=1
 sed -i "s|<Version>${CURRENT_VERSION}</Version>|<Version>${VERSION}</Version>|" "$CSPROJ"
 grep -q "<Version>${VERSION}</Version>" "$CSPROJ" || die "Version bump did not apply to $CSPROJ"
-git add "$CSPROJ"
+sed -i "s|\"version\": \"${CURRENT_VERSION}\"|\"version\": \"${VERSION}\"|" "$SERVER_JSON"
+[[ $(grep -c "\"version\": \"${VERSION}\"" "$SERVER_JSON") -eq 2 ]] || die "Version bump did not apply to $SERVER_JSON"
+git add "$CSPROJ" "$SERVER_JSON"
 git commit --quiet -m "chore(release): bump version to ${VERSION}"
 green "✓ Bumped and committed on ${RELEASE_BRANCH}"
 
