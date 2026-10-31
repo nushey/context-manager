@@ -1,6 +1,19 @@
 ## Context Manager MCP
 
-Call the Context Manager tools before reading or editing any C# file. Every tool is read-only and stateless.
+Every tool is read-only and stateless.
+
+**Your first step on any question about C# code must be a Context Manager call, not `grep`, `rg`, `sed`, `cat` or a file read.** Text search misses usages through `var` and interfaces, and it confuses overloads and methods with the same name.
+
+| Question | Call first |
+|----------|------------|
+| Who calls, implements, injects or uses a type or method? | `graph_get_dependencies` on that type or method |
+| What depends on a type or method, directly or transitively, before I change it? | `graph_impact_analysis` on that type or method |
+| How does one type or method reach another? | `graph_path_find` between them |
+| What does a type expose and depend on? | `inspect_file` on its file |
+| How do several files reference each other? | `inspect_context` on those files |
+
+- Method node IDs include parameter types, for example `MyApp.Services.IOrderService.GetOrderAsync(int)`. Query the type first; its result lists its neighbors' files.
+- Use `grep` or file reads only afterwards, to read method bodies at the files and line ranges the tools returned, or for non-C# files and string literals.
 
 ### Inspect files
 

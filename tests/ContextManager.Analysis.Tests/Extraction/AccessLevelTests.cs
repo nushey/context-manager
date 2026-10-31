@@ -61,10 +61,14 @@ public class AccessLevelTests
     }
 
     [TestMethod]
-    public void FromModifiers_ProtectedInternal_ReturnsProtected()
+    [DataRow("protected internal", "protected internal")]
+    [DataRow("internal protected", "protected internal")]
+    [DataRow("private protected", "private protected")]
+    [DataRow("protected private", "private protected")]
+    public void FromModifiers_CombinedProtected_ReturnsCombinedAccess(string modifiersText, string expected)
     {
-        var modifiers = GetModifiersFromNestedMember("class Outer { protected internal class Inner {} }");
-        Assert.AreEqual("protected", AccessLevel.FromModifiers(modifiers, isTopLevelType: false));
+        var modifiers = GetModifiersFromNestedMember($"class Outer {{ {modifiersText} class Inner {{}} }}");
+        Assert.AreEqual(expected, AccessLevel.FromModifiers(modifiers, isTopLevelType: false));
     }
 
     [DataTestMethod]
