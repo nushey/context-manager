@@ -26,6 +26,7 @@ public sealed class GraphImpactAnalysisTool
         GraphSyncRunner.QuerySynchronizationDescription + " " +
         "Seeds the BFS with the node, its direct members (via CONTAINS), and any interfaces it implements (via IMPLEMENTS) plus their members, " +
         "so member-level dependencies aggregate to their declaring type. " +
+        "The implementors of every interface reached are included. " +
         "Member nodes reached during traversal are rolled up to their declaring type. " +
         "Returns an object with 'affectedIds' (ordered list of impacted type IDs) and 'affectedFiles' (each returned affected ID mapped to its declaring source file, when known, ready for inspect_file).")]
     public async Task<string> GraphImpactAnalysisAsync(
@@ -39,7 +40,7 @@ public sealed class GraphImpactAnalysisTool
 
         if (!store.TryGetNode(nodeId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", null),
                 AnalysisJson.Options);
 
         var affectedIds = store.ImpactBackward(nodeId, BackwardEdgeTypes, ct);

@@ -37,7 +37,6 @@ public class EdgeExtractorTests
             assemblyName: "EdgeExtractorTest",
             syntaxTrees: trees);
 
-        // Use the first file's tree as the primary analysis target.
         var primaryTree = trees[0];
         var model = compilation.GetSemanticModel(primaryTree);
         var root = (CompilationUnitSyntax)primaryTree.GetRoot();
@@ -53,7 +52,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var implementsEdge = edges.FirstOrDefault(e =>
             e.Type == "IMPLEMENTS" &&
@@ -72,7 +71,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var injectsEdge = edges.FirstOrDefault(e =>
             e.Type == "INJECTS" &&
@@ -89,7 +88,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var bclEdges = edges.Where(e =>
             e.Target.Id.StartsWith("System.", StringComparison.Ordinal) ||
@@ -105,7 +104,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var inheritsEdges = edges.Where(e => e.Type == "INHERITS").ToList();
 
@@ -119,7 +118,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([PrimaryConstructorClassPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var injectsEdge = edges.FirstOrDefault(e =>
             e.Type == "INJECTS" &&
@@ -136,7 +135,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([GenericConstructorClassPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var injectsEdge = edges.FirstOrDefault(e =>
             e.Type == "INJECTS" &&
@@ -145,7 +144,6 @@ public class EdgeExtractorTests
 
         Assert.IsNotNull(injectsEdge,
             $"Expected INJECTS edge from MyRepositoryConsumer to IRepository<T> (open). Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
-        // The target must be the OPEN generic, not the closed IRepository<MyEntity> instantiation.
         Assert.IsFalse(injectsEdge!.Target.Id.Contains("MyEntity"),
             $"INJECTS target must be the open generic IRepository<T>, not the closed form. Got: {injectsEdge.Target.Id}");
     }
@@ -156,7 +154,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var containsEdge = edges.FirstOrDefault(e =>
             e.Type == "CONTAINS" &&
@@ -175,7 +173,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var containsEdge = edges.FirstOrDefault(e =>
             e.Type == "CONTAINS" &&
@@ -194,13 +192,12 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var methodContainsEdge = edges.FirstOrDefault(e =>
             e.Type == "CONTAINS" && e.Target.Kind == "Method" && e.Target.Id.Contains("GetGreeting"));
 
         Assert.IsNotNull(methodContainsEdge, "Expected at least one CONTAINS edge to a Method node");
-        // The ID must match IMethodSymbol.ToDisplayString() — same form GraphBuilder uses for method nodes.
         Assert.IsTrue(
             methodContainsEdge!.Target.Id.Contains("GetGreeting"),
             $"Expected method node ID to contain 'GetGreeting' (ToDisplayString form). Got: {methodContainsEdge.Target.Id}");
@@ -212,7 +209,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithMembersPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var containsEdges = edges.Where(e => e.Type == "CONTAINS").ToList();
         var distinct = containsEdges
@@ -230,7 +227,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         Assert.IsTrue(edges.Count > 0, "Expected at least one edge from the fixture");
 
@@ -248,7 +245,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdge = edges.FirstOrDefault(e =>
             e.Type == "REFERENCES" &&
@@ -265,7 +262,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdge = edges.FirstOrDefault(e =>
             e.Type == "REFERENCES" &&
@@ -283,7 +280,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdge = edges.FirstOrDefault(e =>
             e.Type == "REFERENCES" &&
@@ -302,7 +299,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdge = edges.FirstOrDefault(e =>
             e.Type == "REFERENCES" &&
@@ -319,7 +316,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdges = edges.Where(e =>
             e.Type == "REFERENCES" &&
@@ -344,13 +341,8 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
-        // ProcessLocally() uses Tour as a local variable — this must NOT produce a REFERENCES edge
-        // that doesn't also exist from a signature. TourService has a Tour property so there IS
-        // a REFERENCES to Tour from the property signature; but that edge comes only once (dedup).
-        // What we verify here is that the REFERENCES count to Tour equals exactly 1 (from the
-        // property), not 2 (property + local variable).
         var tourReferences = edges.Count(e =>
             e.Type == "REFERENCES" &&
             e.Source.Id.Contains("TourService") &&
@@ -368,7 +360,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var bclReferencesEdges = edges.Where(e =>
             e.Type == "REFERENCES" &&
@@ -387,7 +379,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([TypeWithReferencesPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var referencesEdges = edges.Where(e => e.Type == "REFERENCES").ToList();
         var distinct = referencesEdges
@@ -405,7 +397,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var injectsEdge = edges.FirstOrDefault(e =>
             e.Type == "INJECTS" &&
@@ -429,7 +421,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var returnsEdge = edges.FirstOrDefault(e =>
             e.Type == "RETURNS" &&
@@ -448,7 +440,7 @@ public class EdgeExtractorTests
         var (model, root) = ParseWithCompilation([OpenGenericImplementationPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
         var typeArgReference = edges.Any(e =>
             e.Type == "REFERENCES" &&
@@ -462,15 +454,11 @@ public class EdgeExtractorTests
     [TestMethod]
     public void Extract_RecordStruct_SourceNodeKindIsRecord()
     {
-        // A `record struct` has TypeKind.Struct AND IsRecord. The pre-shared-classifier NodeFor
-        // matched Struct → "Class" before IsRecord, mislabeling it. The shared classifier checks
-        // IsRecord first, so the Point source node must now be "Record".
         var (model, root) = ParseWithCompilation([RecordStructPath]);
         var extractor = CreateExtractor();
 
-        var edges = extractor.Extract(model, root);
+        var edges = extractor.Extract(model, root).Edges;
 
-        // The Sum member produces a CONTAINS edge whose source is the record struct node.
         var pointSource = edges.FirstOrDefault(e =>
             e.Type == "CONTAINS" && e.Source.Id.Contains("Point"));
 
@@ -485,7 +473,7 @@ public class EdgeExtractorTests
     {
         var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
 
-        var edges = CreateExtractor().Extract(model, root);
+        var edges = CreateExtractor().Extract(model, root).Edges;
 
         Assert.IsTrue(edges.Any(e => e.Type == "INHERITS" && e.Source.Id.EndsWith("Derived") &&
             e.Target.Id.Contains("GenericBase<T>") && !e.Target.Id.Contains("Payload")));
@@ -500,7 +488,7 @@ public class EdgeExtractorTests
     {
         var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
 
-        var edges = CreateExtractor().Extract(model, root);
+        var edges = CreateExtractor().Extract(model, root).Edges;
 
         Assert.IsTrue(edges.Any(e => e.Type == "CALLS" && e.Source.Id.EndsWith("Service") &&
             e.Target.Id.Contains("Utility.Run")), "Constructor call must originate from the containing type.");
@@ -517,7 +505,7 @@ public class EdgeExtractorTests
     {
         var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
 
-        var edges = CreateExtractor().Extract(model, root);
+        var edges = CreateExtractor().Extract(model, root).Edges;
 
         Assert.IsFalse(edges.Any(e => e.Source.Id.Contains("Inner") || e.Target.Id.Contains("Inner")),
             "Local functions must not become graph nodes or CALLS targets.");
@@ -530,7 +518,7 @@ public class EdgeExtractorTests
     {
         var (model, root) = ParseWithCompilation([GraphCorrectnessCasesPath]);
 
-        var edges = CreateExtractor().Extract(model, root);
+        var edges = CreateExtractor().Extract(model, root).Edges;
 
         var call = edges.First(e => e.Type == "CALLS" && e.Target.Id.Contains("Utility.Run"));
         Assert.AreEqual(Path.GetFullPath(GraphCorrectnessCasesPath), call.Target.File);
@@ -548,8 +536,8 @@ public class EdgeExtractorTests
         foreach (var tree in trees)
         {
             var root = (CompilationUnitSyntax)tree.GetRoot();
-            foreach (var edge in CreateExtractor().Extract(compilation.GetSemanticModel(tree), root))
-                store.AddEdge(edge);
+            var (nodes, edges) = CreateExtractor().Extract(compilation.GetSemanticModel(tree), root);
+            store = store.With(nodes, edges);
         }
 
         var references = store.GetAggregatedNeighbors("PartialGraphFixtures.Consumer")
@@ -570,7 +558,7 @@ public class EdgeExtractorTests
             .Select(p => MetadataReference.CreateFromFile(p));
         var compilation = CSharpCompilation.Create("EdgeCoverageTest", trees, references);
 
-        return new EdgeExtractor().Extract(compilation.GetSemanticModel(trees[0]), (CompilationUnitSyntax)trees[0].GetRoot());
+        return new EdgeExtractor().Extract(compilation.GetSemanticModel(trees[0]), (CompilationUnitSyntax)trees[0].GetRoot()).Edges;
     }
 
     private static bool HasEdge(IReadOnlyList<GraphEdge> edges, string source, string type, string target) =>

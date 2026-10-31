@@ -15,7 +15,7 @@ public sealed class GraphWorkspaceSession : IDisposable
         MSBuildWorkspace workspace,
         string solutionPath,
         Solution solution,
-        IReadOnlyList<GraphBuildDiagnostic> diagnostics,
+        bool hasWorkspaceFailures,
         IReadOnlyList<GraphTrackedFile> inputs,
         IReadOnlyList<string> candidateFiles,
         IReadOnlyList<string> sourceRoots)
@@ -23,7 +23,7 @@ public sealed class GraphWorkspaceSession : IDisposable
         _workspace = workspace;
         SolutionPath = solutionPath;
         Solution = solution;
-        Diagnostics = diagnostics;
+        HasWorkspaceFailures = hasWorkspaceFailures;
         Inputs = inputs;
         CandidateFiles = candidateFiles;
         SourceRoots = sourceRoots;
@@ -31,7 +31,7 @@ public sealed class GraphWorkspaceSession : IDisposable
 
     public string SolutionPath { get; }
     public Solution Solution { get; private set; }
-    public IReadOnlyList<GraphBuildDiagnostic> Diagnostics { get; }
+    public bool HasWorkspaceFailures { get; }
     public IReadOnlyList<GraphTrackedFile> Inputs { get; }
     public IReadOnlyList<string> CandidateFiles { get; }
     public IReadOnlyList<string> SourceRoots { get; }
@@ -43,11 +43,11 @@ public sealed class GraphWorkspaceSession : IDisposable
         var workspace = MSBuildWorkspace.Create();
         try
         {
-            var diagnostics = new List<GraphBuildDiagnostic>();
+            var hasWorkspaceFailures = 0;
             workspace.RegisterWorkspaceFailedHandler(args =>
             {
-                lock (diagnostics)
-                    diagnostics.Add(new GraphBuildDiagnostic(args.Diagnostic.Kind.ToString(), args.Diagnostic.Message));
+                if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
+                    Interlocked.Exchange(ref hasWorkspaceFailures, 1);
             });
 
             var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
@@ -66,11 +66,7 @@ public sealed class GraphWorkspaceSession : IDisposable
                 .ToList();
             var candidates = ScanCandidateFiles(projectFiles, sourceRoots, evaluationStartedUtc);
 
-            List<GraphBuildDiagnostic> diagnosticSnapshot;
-            lock (diagnostics)
-                diagnosticSnapshot = diagnostics.ToList();
-
-            return new GraphWorkspaceSession(workspace, solutionPath, solution, diagnosticSnapshot, inputs, candidates, sourceRoots);
+            return new GraphWorkspaceSession(workspace, solutionPath, solution, Volatile.Read(ref hasWorkspaceFailures) == 1, inputs, candidates, sourceRoots);
         }
         catch
         {

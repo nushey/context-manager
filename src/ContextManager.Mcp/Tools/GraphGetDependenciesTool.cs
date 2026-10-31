@@ -30,7 +30,7 @@ public sealed class GraphGetDependenciesTool
 
         if (!store.TryGetNode(nodeId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", nodeId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {nodeId}", null),
                 AnalysisJson.Options);
 
         var neighbors = store.GetAggregatedNeighbors(nodeId, ct);

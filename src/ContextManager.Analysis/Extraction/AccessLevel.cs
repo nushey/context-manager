@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace ContextManager.Analysis.Extraction;
 
@@ -29,4 +30,9 @@ public static class AccessLevel
 
         return isTopLevelType ? "internal" : "private";
     }
+
+    public static string OfMember(MemberDeclarationSyntax member, ExplicitInterfaceSpecifierSyntax? explicitSpecifier = null) =>
+        explicitSpecifier is not null || (member.Parent is InterfaceDeclarationSyntax && !member.Modifiers.Any())
+            ? "public"
+            : FromModifiers(member.Modifiers, isTopLevelType: false);
 }

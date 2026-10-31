@@ -5,5 +5,5 @@ public sealed record GraphBaseline(
     IReadOnlyList<GraphProjectState> Projects,
     IReadOnlyList<GraphTrackedFile> Inputs,
     IReadOnlyList<string> CandidateFiles,
-    IReadOnlyList<GraphBuildDiagnostic> Diagnostics,
+    bool HasWorkspaceFailures,
     IReadOnlyList<string>? SourceRoots = null);

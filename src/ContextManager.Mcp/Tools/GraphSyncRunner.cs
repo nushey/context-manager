@@ -7,17 +7,11 @@ namespace ContextManager.Mcp.Tools;
 
 internal static class GraphSyncRunner
 {
-    public const string QuerySynchronizationDescription = "Before answering, the graph is synchronized: built when graph.json is missing, otherwise only the invalidated contributions are re-extracted; source and MSBuild input files are compared by content hash, while changes that only alter environment-dependent MSBuild evaluation are not detected (run project_scan to force re-evaluation); a failed synchronization returns the same error as project_scan and keeps the previous graph.";
+    public const string QuerySynchronizationDescription = "Before answering, the graph is synchronized: built when the solution has no graph yet, otherwise only the invalidated contributions are re-extracted; source and MSBuild input files are compared by content hash, while changes that only alter environment-dependent MSBuild evaluation are not detected (run project_scan to force re-evaluation); a failed synchronization returns the same error as project_scan and keeps the previous graph.";
 
-    public const string QuerySolutionPathDescription = "Absolute path to the .sln whose graph to query, the same path passed to project_scan. The graph lives in .context-manager/graph.json next to it; before the query it is built when missing, or brought up to date when sources, evaluated document membership, or MSBuild inputs changed.";
+    public const string QuerySolutionPathDescription = "Absolute path to the .sln whose graph to query, the same path passed to project_scan.";
 
     internal sealed record Outcome(GraphSyncResult? Result, string? ErrorJson, string Coverage);
-
-    public static void EnsureMsBuildRegistered()
-    {
-        MsBuildBootstrap.EnsureRegistered();
-        Console.Error.WriteLine($"graph_sync phase=msbuild_registration {MsBuildBootstrap.DescribeRegistration()}");
-    }
 
     public static async Task<Outcome> RunAsync(
         IGraphSynchronizer synchronizer,
@@ -40,12 +34,11 @@ internal static class GraphSyncRunner
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            Console.Error.WriteLine($"{tool} cancelled. {MsBuildBootstrap.DescribeRegistration()}");
             return Failure(new AnalysisError("scan_cancelled", "The solution scan was cancelled; the previous graph remains active.", solutionPath));
         }
         catch (GraphSyncException ex)
         {
-            Console.Error.WriteLine($"{tool} phase={ex.Phase} failed. {MsBuildBootstrap.DescribeRegistration()}{Environment.NewLine}{ex.InnerException}");
+            Console.Error.WriteLine($"{tool} phase={ex.Phase} failed:{Environment.NewLine}{ex.InnerException}");
             return Failure(new AnalysisError("scan_failed", $"phase={ex.Phase}; {FormatExceptionChain(ex.InnerException!)}", solutionPath));
         }
 

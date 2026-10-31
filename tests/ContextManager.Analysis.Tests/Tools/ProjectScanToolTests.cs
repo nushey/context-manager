@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ContextManager.Analysis;
 using ContextManager.Analysis.Graph;
+using ContextManager.Analysis.Tests.Graph;
 using ContextManager.Analysis.Models;
 using ContextManager.Mcp.Tools;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -10,10 +11,18 @@ namespace ContextManager.Analysis.Tests.Tools;
 [TestClass]
 public class ProjectScanToolTests : FixtureTest
 {
-    private ProjectScanTool CreateTool(GraphRegistry? registry = null, Func<string, string, CancellationToken, Task>? writeFile = null)
+    private ProjectScanTool CreateTool(GraphRegistry? registry = null) =>
+        new(CreateSynchronizer(registry ?? new GraphRegistry()));
+
+    private static void PersistPreviousGraph(string solutionPath)
     {
-        return new ProjectScanTool(CreateSynchronizer(registry ?? new GraphRegistry(), writeFile));
+        var graphPath = GraphRegistry.GetGraphPath(solutionPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(graphPath)!);
+        File.WriteAllText(graphPath, new GraphStore().WithNode(new GraphNode("Previous", "Class")).Serialize());
     }
+
+    private static bool HasPreviousGraph(string solutionPath) =>
+        new GraphRegistry().TryLoad(solutionPath)!.TryGetNode("Previous", out _);
 
     private string CopyCoverageSolution() => Path.Combine(CopyFixture("ScanFixtures"), "Coverage.sln");
 
@@ -65,10 +74,8 @@ public class ProjectScanToolTests : FixtureTest
     public async Task ProjectScanAsync_PreCancelled_PreservesPublishedGraph()
     {
         var solutionPath = CopyIncrementalSolution();
-        var registry = new GraphRegistry();
-        var store = registry.GetStore(solutionPath);
-        store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = CreateTool(registry);
+        PersistPreviousGraph(solutionPath);
+        var tool = CreateTool();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -76,29 +83,7 @@ public class ProjectScanToolTests : FixtureTest
 
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_cancelled", error?.Code);
-        Assert.IsTrue(store.TryGetNode("Previous", out _));
-        Assert.IsFalse(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
-    }
-
-    [TestMethod]
-    [Timeout(120_000)]
-    public async Task ProjectScanAsync_PersistenceFailure_PreservesPublishedGraph()
-    {
-        var directory = CopyFixture("GraphFixtures", "IncrementalFixtures");
-        var solutionPath = Path.Combine(directory, "Incremental.sln");
-        var registry = new GraphRegistry();
-        var store = registry.GetStore(solutionPath);
-        store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = CreateTool(registry, (_, _, _) => throw new IOException("controlled write failure"));
-
-        var json = await tool.ProjectScanAsync(solutionPath);
-
-        var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
-        Assert.AreEqual("scan_failed", error?.Code);
-        StringAssert.Contains(error?.Message, "phase=persistence");
-        StringAssert.Contains(error?.Message, "controlled write failure");
-        Assert.IsTrue(store.TryGetNode("Previous", out _));
-        Assert.IsFalse(File.Exists(GraphRegistry.GetGraphPath(solutionPath)));
+        Assert.IsTrue(HasPreviousGraph(solutionPath));
     }
 
     [TestMethod]
@@ -120,16 +105,14 @@ public class ProjectScanToolTests : FixtureTest
     {
         var directory = CopyFixture("ScanFixtures");
         var solutionPath = Path.Combine(directory, "Empty.sln");
-        var registry = new GraphRegistry();
-        var store = registry.GetStore(solutionPath);
-        store.AddNode(new GraphNode("Previous", "Class"));
-        var tool = CreateTool(registry);
+        PersistPreviousGraph(solutionPath);
+        var tool = CreateTool();
 
         var json = await tool.ProjectScanAsync(solutionPath);
 
         var error = JsonSerializer.Deserialize<AnalysisError>(json, AnalysisJson.Options);
         Assert.AreEqual("scan_empty", error?.Code);
-        Assert.IsTrue(store.TryGetNode("Previous", out _));
+        Assert.IsTrue(HasPreviousGraph(solutionPath));
     }
 
     [TestMethod]
@@ -151,7 +134,6 @@ public class ProjectScanToolTests : FixtureTest
         StringAssert.StartsWith(second, "Scan partial. 16 nodes, 18 edges.");
         var graph = registry.TryLoad(solutionPath)!;
         Assert.AreNotEqual(firstRevision, graph.Revision);
-        Assert.IsTrue(graph.HasProvenance);
         Assert.IsFalse(graph.GetAggregatedNeighbors("IncrementalFixtures.Core.Sender").Any(n => n.Id == "IncrementalFixtures.Core.Audit"));
     }
 

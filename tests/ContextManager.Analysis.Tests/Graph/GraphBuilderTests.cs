@@ -9,9 +9,6 @@ namespace ContextManager.Analysis.Tests.Graph;
 [TestClass]
 public class GraphBuilderTests
 {
-    // IsSourceDocument normalizes separators before the obj/bin check, so both `/` and `\`
-    // forms are rejected. `.g.cs` filtering is separator-independent.
-
     [TestMethod]
     public void IsSourceDocument_ObjWithAltSeparator_Rejected()
     {
@@ -72,5 +69,12 @@ public class GraphBuilderTests
             },
             nodeIds,
             string.Join(Environment.NewLine, nodeIds));
+    }
+
+    [TestMethod]
+    public void GetGraphPath_SolutionsInSameDirectory_UseSeparateFiles()
+    {
+        Assert.AreNotEqual(GraphRegistry.GetGraphPath("/repo/App.sln"), GraphRegistry.GetGraphPath("/repo/App.Tests.sln"));
+        Assert.AreEqual(Path.GetFullPath("/repo/.context-manager/App.graph.json"), GraphRegistry.GetGraphPath("/repo/App.sln"));
     }
 }

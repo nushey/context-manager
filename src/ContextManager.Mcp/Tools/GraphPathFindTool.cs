@@ -30,12 +30,12 @@ public sealed class GraphPathFindTool
 
         if (!store.TryGetNode(sourceId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {sourceId}", sourceId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {sourceId}", null),
                 AnalysisJson.Options);
 
         if (!store.TryGetNode(targetId, out _))
             return JsonSerializer.Serialize(
-                new AnalysisError("node_not_found", $"Node not found in graph: {targetId}", targetId),
+                new AnalysisError("node_not_found", $"Node not found in graph: {targetId}", null),
                 AnalysisJson.Options);
 
         var path = store.ShortestPath(sourceId, targetId, ct);

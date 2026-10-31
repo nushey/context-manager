@@ -137,8 +137,6 @@ public class ContextAnalyzerTests
         {
             foreach (var type in file.Types)
             {
-                // ContextTypeInfo has no Properties field at all — this is a compile-time guarantee.
-                // Verify via JSON serialization that no "properties" key appears in any type object.
                 var json = JsonSerializer.Serialize(type, AnalysisJson.Options);
                 Assert.IsFalse(json.Contains("\"properties\""),
                     $"Type '{type.Name}' in '{file.File}' has a 'properties' key in JSON output");
@@ -268,5 +266,30 @@ public class ContextAnalyzerTests
         CollectionAssert.DoesNotContain(result.Unresolved.ToList(), "ControllerBase");
         Assert.IsFalse(result.References.Any(r => r.To is "int" or "string?"),
             string.Join(", ", result.References.Select(r => $"{r.To}:{r.Via}")));
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_RepeatedTypeNamesInOneFile_DoesNotThrow()
+    {
+        var result = await CreateAnalyzer().AnalyzeAsync([FixturePath("ExtractionEdgeCases.cs")]);
+
+        Assert.AreEqual(2, result.Files.Single().Types.Count(t => t.Name == "Builder"));
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_FrameworkBaseClassStartingWithI_ReferencedAsBase()
+    {
+        var result = await CreateAnalyzer().AnalyzeAsync([FixturePath("ExtractionEdgeCases.cs")]);
+
+        Assert.AreEqual("base", result.References.Single(r => r.From == "StorageError" && r.To == "IOException").Via);
+        Assert.AreEqual("implements", result.References.Single(r => r.From == "StorageError" && r.To == "IDisposable").Via);
+    }
+
+    [TestMethod]
+    public async Task AnalyzeAsync_ExplicitInterfaceImplementation_ReferencesParameterTypes()
+    {
+        var result = await CreateAnalyzer().AnalyzeAsync([FixturePath("ExtractionEdgeCases.cs")]);
+
+        Assert.IsTrue(result.References.Any(r => r.From == "Handler" && r.To == "Payload" && r.Via == "parameter"));
     }
 }

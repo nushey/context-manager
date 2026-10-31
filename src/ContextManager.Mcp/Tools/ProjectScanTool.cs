@@ -21,7 +21,7 @@ public sealed class ProjectScanTool
         "evaluated membership, or compilation inputs changed (plus the projects that depend on them), reusing every other contribution. " +
         "The result reports project/document coverage, unsupported languages, and skipped documents. " +
         "Persistence and in-memory publication succeed together; failed, empty, or cancelled scans preserve the previous graph. " +
-        "The graph query tools read graph.json by this solutionPath, so every session working on the solution sees the latest scan.")]
+        "The graph is persisted in .context-manager/<solution name>.graph.json next to the .sln, so every session working on the solution sees the latest scan.")]
     public async Task<string> ProjectScanAsync(
         [Description("Absolute path to a .sln file to scan.")] string solutionPath,
         CancellationToken ct = default)
@@ -36,10 +36,7 @@ public sealed class ProjectScanTool
         if (outcome.ErrorJson is not null)
             return outcome.ErrorJson;
 
-        if (outcome.Result is null)
-            return GraphSyncRunner.Serialize(new AnalysisError("invalid_solution_path", $"Solution file not found: {solutionPath}", solutionPath));
-
-        var report = outcome.Result.Report;
+        var report = outcome.Result!.Report;
         return $"Scan {report.Status}. {report.NodeCount} nodes, {report.EdgeCount} edges. Coverage: {outcome.Coverage}.";
     }
 }
