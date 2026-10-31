@@ -17,6 +17,7 @@ Context Manager is a C# / .NET 10 MCP (Model Context Protocol) server that uses 
 | `.claude/` | Claude Code project settings and hook configuration |
 | `.gemini/` | Gemini AI assistant configuration |
 | `docs/` | Agent-facing docs: `AGENTS-template.md` (drop-in rules for projects that consume the MCP server) |
+| `assets/` | Static assets: `logo.svg`, referenced from the README by its `raw.githubusercontent.com` URL so it also renders on NuGet.org |
 | `scripts/` | Auxiliary maintenance scripts and the one-line installers (`install.sh`, `install.ps1`) |
 | `nupkgs/` | Local NuGet package output directory |
 | `src/ContextManager.Mcp/` | MCP server console app — entry point, tool registration, stdio host wiring, `setup` subcommand (`Setup/`) |

@@ -498,3 +498,7 @@ nupkgs/
 .context-manager/
 
 Finding.md
+
+# MCP Registry publisher login tokens
+.mcpregistry_github_token
+.mcpregistry_registry_token

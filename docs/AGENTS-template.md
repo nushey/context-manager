@@ -1,36 +1,50 @@
 ## Context Manager MCP
 
-**MANDATORY**: Call these tools before reading or editing any C# file. They are read-only and stateless.
+Call the Context Manager tools before reading or editing any C# file. Every tool is read-only and stateless.
 
-### Rules
+### Inspect files
 
 | Situation | Tool | Input |
 |-----------|------|-------|
-| Touching a single file you haven't read | `inspect_file` | `{ "filePath": "/abs/path/File.cs" }` |
-| Task spans multiple files | `inspect_context` | `{ "filePaths": ["/abs/path/A.cs", "/abs/path/B.cs"] }` |
+| You will touch one `.cs` file you haven't read | `inspect_file` | `{ "filePath": "/abs/path/File.cs" }` |
+| The task spans several `.cs` files | `inspect_context` | `{ "filePaths": ["/abs/path/A.cs", "/abs/path/B.cs"] }` |
 
-- **Always use absolute paths.**
-- **`inspect_context` max 15 files.** Split into smaller batches if needed.
-- **Check `unresolved`** — types listed there are dependencies not in your file set. Add their files and call again.
-- **Do not call these tools for non-`.cs` files** — they will fail.
-- **Do not use these tools as a substitute for reading method bodies.** Use `read_file` with line numbers from the output when you need logic.
+- Pass absolute paths.
+- Pass at most 15 files to `inspect_context`; split larger sets into batches.
+- Check `unresolved` in the `inspect_context` result: it lists dependencies outside your file set. Add their files and call again.
+- Pass only `.cs` files; other files fail.
+- Do not use these tools in place of method bodies. When you need logic, read the file with the method's line range from the output.
 
-### Knowledge Graph
+### Navigate the knowledge graph
 
-Use graph tools to navigate before you read. The starting point is always the file the user mentions. Every graph tool takes `solutionPath`: the absolute path of the solution's `.sln`. Before answering, graph tools build the graph when it is missing and re-extract only what changed since the last scan. Run `project_scan` to force an MSBuild re-evaluation (for example after environment-dependent build changes). If a graph tool returns `graph_not_found`, neither the `.sln` nor its graph exists: check `solutionPath`. Scan errors (`scan_failed`, `scan_incomplete`, `scan_empty`, `scan_cancelled`, `msbuild_not_found`) mean the graph could not be updated.
+Use the graph tools to find what to read before you read it. Start from the file the user mentions.
+
+- Every graph tool takes `solutionPath`: the absolute path of the solution's `.sln`.
+- A node ID is the symbol's fully qualified name, for example `MyApp.Services.OrderService`.
+- Before answering, a graph tool builds the graph if it is missing and re-extracts only what changed since the last scan. Run `project_scan` only to force an MSBuild re-evaluation, for example after environment-dependent build changes.
+- `graph_not_found` means neither the `.sln` nor its graph exists: check `solutionPath`.
+- `scan_failed`, `scan_incomplete`, `scan_empty`, `scan_cancelled` and `msbuild_not_found` mean the graph could not be updated.
 
 | Step | Tool | Purpose |
 |------|------|---------|
-| 1 | `inspect_file(path)` | Read the type → note namespace and type name |
-| 2 | `graph_get_dependencies(solutionPath, nodeId)` | Discover adjacent files worth reading |
-| 3 | `inspect_file` on the `file` of relevant neighbors | Read only what you actually need |
-| 4 | `graph_impact_analysis(solutionPath, nodeId)` | Assess blast radius before changing anything |
+| 1 | `inspect_file(path)` | Read the type; note its namespace and type name, which form its node ID |
+| 2 | `graph_get_dependencies(solutionPath, nodeId)` | Find adjacent files worth reading |
+| 3 | `inspect_file` on the `file` of relevant neighbors | Read only what you need |
+| 4 | `graph_impact_analysis(solutionPath, nodeId)` | Assess the blast radius before changing anything |
 
-**Reading `graph_get_dependencies` results:** entries are aggregated per neighbor type and direction. `direction: "in"` = the neighbor depends on the queried node; `direction: "out"` = the queried node depends on the neighbor. `edgeKinds` counts the edges per kind (`INJECTS`, `CALLS`, `REFERENCES`, `IMPLEMENTS`, …). `file` is the neighbor's declaring source file. `graph_impact_analysis` maps each returned `affectedIds` entry to its file in `affectedFiles`. The queried type's own members are never listed — use `inspect_file` for those.
+**`graph_get_dependencies` results** have one entry per neighbor type and direction:
 
-**`graph_impact_analysis` is a risk calibration tool — not a verification checklist.**
-- Few results → change is contained, proceed normally.
-- Many results → this type's public contract is load-bearing. Preserve it.
-- Do NOT inspect every node in the result. Use the count and direct callers to decide how conservative to be.
+- `direction: "in"`: the neighbor depends on the queried node.
+- `direction: "out"`: the queried node depends on the neighbor.
+- `edgeKinds`: edge counts per kind (`INJECTS`, `CALLS`, `REFERENCES`, `IMPLEMENTS`, …).
+- `file`: the neighbor's declaring source file.
 
-**`graph_path_find(solutionPath, sourceId, targetId)`** is available for investigation: use it when you need to understand why two nodes are connected or trace the dependency chain between two specific types.
+The queried type's own members are never listed; use `inspect_file` for those.
+
+**`graph_impact_analysis`** returns `affectedIds` and maps each one to its file in `affectedFiles`. Use it to calibrate risk, not as a checklist to verify:
+
+- Few results: the change is contained; proceed normally.
+- Many results: the type's public contract is load-bearing; preserve it.
+- Do not inspect every returned node. Decide how conservative to be from the count and the direct callers.
+
+**`graph_path_find(solutionPath, sourceId, targetId)`**: use it to understand why two nodes are connected or to trace the dependency chain between two specific types.
