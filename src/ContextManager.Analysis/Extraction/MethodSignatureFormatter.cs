@@ -10,6 +10,8 @@ public static class MethodSignatureFormatter
             ? string.Join(", ", method.Parameters.Select(p => $"{p.Name}:{p.Type}"))
             : string.Empty;
 
-        return $"{method.Name}({paramList}): {method.ReturnType}";
+        var accessPrefix = method.Access == "public" ? string.Empty : $"{method.Access} ";
+
+        return $"{accessPrefix}{method.Name}({paramList}): {method.ReturnType}";
     }
 }
