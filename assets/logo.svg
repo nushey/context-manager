@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">ContextManager logo</title>
+  <desc id="desc">A compact knowledge graph converging on a central context node.</desc>
+  <g stroke="#7386F5" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M70 70 128 128 186 70M70 186l58-58 58 58" opacity=".62"/>
+    <circle cx="70" cy="70" r="16" fill="#101827"/>
+    <circle cx="186" cy="70" r="16" fill="#101827"/>
+    <circle cx="70" cy="186" r="16" fill="#101827"/>
+    <circle cx="186" cy="186" r="16" fill="#101827"/>
+  </g>
+  <circle cx="128" cy="128" r="28" fill="#7386F5"/>
+  <path d="m120 119-9 9 9 9m16-18 9 9-9 9" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

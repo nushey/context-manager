@@ -1,5 +1,9 @@
 <!-- mcp-name: io.github.nushey/context-manager -->
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/nushey/ContextManager/main/assets/logo.svg" width="128" alt="ContextManager logo">
+</p>
+
 <h1 align="center">ContextManager</h1>
 
 <p align="center">
