@@ -28,6 +28,10 @@ public interface IPickupProvider : IPlugin
 {
 }
 
+public interface IMiscProvider : IPlugin
+{
+}
+
 public class PluginInspector
 {
     private const IPlugin NoPlugin = null;
@@ -54,4 +58,26 @@ public class PluginInspector
     public bool IsPickupBatch(object plugins) => plugins is IPickupProvider[] or null;
 
     public bool IsMissing(IPlugin plugin) => plugin switch { NoPlugin => true, _ => false };
+
+    public bool IsMisc(IPlugin plugin)
+    {
+        switch (plugin)
+        {
+            case IMiscProvider:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public bool IsMissingLabel(IPlugin plugin)
+    {
+        switch (plugin)
+        {
+            case NoPlugin:
+                return true;
+            default:
+                return false;
+        }
+    }
 }

@@ -90,6 +90,7 @@ public class EdgeExtractorTests
     [DataRow("RepositoryDefinition", "TypeTestFixtures.IRepository<TEntity, TKey>")]
     [DataRow("IsTaxProvider", "TypeTestFixtures.ITaxProvider")]
     [DataRow("IsPickupBatch", "TypeTestFixtures.IPickupProvider")]
+    [DataRow("IsMisc", "TypeTestFixtures.IMiscProvider")]
     public void Extract_TypeTestedInMethodBody_EmitsReferencesEdge(string method, string targetId)
     {
         var (model, root) = ParseWithCompilation([TypeTestReferencesPath]);
@@ -102,15 +103,17 @@ public class EdgeExtractorTests
     }
 
     [TestMethod]
-    public void Extract_ConstantTestedInMethodBody_EmitsNoReferencesEdgeToItsType()
+    [DataRow("IsMissing")]
+    [DataRow("IsMissingLabel")]
+    public void Extract_ConstantTestedInMethodBody_EmitsNoReferencesEdgeToItsType(string method)
     {
         var (model, root) = ParseWithCompilation([TypeTestReferencesPath]);
 
         var edges = CreateExtractor().Extract(model, root).Edges;
 
         Assert.IsFalse(
-            HasMethodReference(edges, "IsMissing", "TypeTestFixtures.IPlugin"),
-            $"Expected no REFERENCES edge from IsMissing to IPlugin. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+            HasMethodReference(edges, method, "TypeTestFixtures.IPlugin"),
+            $"Expected no REFERENCES edge from {method} to IPlugin. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
 
     private static bool HasMethodReference(IReadOnlyList<GraphEdge> edges, string method, string targetId) =>

@@ -269,6 +269,7 @@ public class EdgeExtractor
     private static TypeSyntax? TestedType(SemanticModel model, SyntaxNode node, CancellationToken ct) => node switch
     {
         ConstantPatternSyntax { Expression: TypeSyntax constantType } when model.GetSymbolInfo(constantType, ct).Symbol is ITypeSymbol => constantType,
+        CaseSwitchLabelSyntax { Value: TypeSyntax labelType } when model.GetSymbolInfo(labelType, ct).Symbol is ITypeSymbol => labelType,
         DeclarationPatternSyntax declaration => declaration.Type,
         TypePatternSyntax typePattern => typePattern.Type,
         RecursivePatternSyntax { Type: { } recursiveType } => recursiveType,
