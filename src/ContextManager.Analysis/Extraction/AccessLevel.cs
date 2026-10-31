@@ -24,6 +24,8 @@ public static class AccessLevel
         }
 
         if (hasPublic)    return "public";
+        if (hasProtected && hasInternal) return "protected internal";
+        if (hasProtected && hasPrivate)  return "private protected";
         if (hasProtected) return "protected";
         if (hasInternal)  return "internal";
         if (hasPrivate)   return "private";

@@ -128,6 +128,26 @@ public class ContextAnalyzerTests
     }
 
     [TestMethod]
+    public async Task AnalyzeAsync_NonPublicMethods_PrefixedWithTheirAccessLevel()
+    {
+        var analyzer = CreateAnalyzer();
+        var result = await analyzer.AnalyzeAsync([FixturePath("AccessModifierMethods.cs")]);
+
+        var methods = result.Files.Single().Types.Single().Methods;
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "PublicMethod(): void",
+                "protected ProtectedMethod(): void",
+                "internal InternalMethod(): void",
+                "protected internal ProtectedInternalMethod(): void",
+                "private protected PrivateProtectedMethod(): void",
+            },
+            methods!.ToArray());
+    }
+
+    [TestMethod]
     public async Task AnalyzeAsync_PropertiesNeverInOutput()
     {
         var analyzer = CreateAnalyzer();
