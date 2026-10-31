@@ -242,6 +242,9 @@ public class EdgeExtractor
 
         foreach (var node in body.DescendantNodesAndSelf())
         {
+            if (TestedType(model, node, ct) is { } testedType)
+                EmitTypeEdge(model.GetTypeInfo(testedType, ct).Type, sourceNode, "REFERENCES", contribution);
+
             switch (node)
             {
                 case InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax:
@@ -262,6 +265,17 @@ public class EdgeExtractor
             }
         }
     }
+
+    private static TypeSyntax? TestedType(SemanticModel model, SyntaxNode node, CancellationToken ct) => node switch
+    {
+        ConstantPatternSyntax { Expression: TypeSyntax constantType } when model.GetSymbolInfo(constantType, ct).Symbol is ITypeSymbol => constantType,
+        DeclarationPatternSyntax declaration => declaration.Type,
+        TypePatternSyntax typePattern => typePattern.Type,
+        RecursivePatternSyntax { Type: { } recursiveType } => recursiveType,
+        BinaryExpressionSyntax { Right: TypeSyntax isType } binary when binary.IsKind(SyntaxKind.IsExpression) => isType,
+        TypeOfExpressionSyntax typeOf => typeOf.Type,
+        _ => null,
+    };
 
     private static void EmitCall(IMethodSymbol invokedSymbol, GraphNode sourceNode, Contribution contribution)
     {

@@ -25,6 +25,7 @@ public class EdgeExtractorTests
     private static readonly string OpenGenericImplementationPath = FixturePath("OpenGenericImplementation.cs");
     private static readonly string RecordStructPath = FixturePath("RecordStruct.cs");
     private static readonly string GraphCorrectnessCasesPath = FixturePath("GraphCorrectnessCases.cs");
+    private static readonly string TypeTestReferencesPath = FixturePath("TypeTestReferences.cs");
 
     private static (SemanticModel Model, CompilationUnitSyntax Root) ParseWithCompilation(
         string[] sourcePaths)
@@ -80,6 +81,24 @@ public class EdgeExtractorTests
 
         Assert.IsNotNull(injectsEdge,
             $"Expected INJECTS edge from SimpleService to ISimpleService. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
+    }
+
+    [TestMethod]
+    [DataRow("Classify", "TypeTestFixtures.IShippingProvider")]
+    [DataRow("IsPayment", "TypeTestFixtures.IPaymentProvider")]
+    [DataRow("IsNotAudited", "TypeTestFixtures.IAuditedPlugin")]
+    [DataRow("RepositoryDefinition", "TypeTestFixtures.IRepository<TEntity, TKey>")]
+    public void Extract_TypeTestedInMethodBody_EmitsReferencesEdge(string method, string targetId)
+    {
+        var (model, root) = ParseWithCompilation([TypeTestReferencesPath]);
+
+        var edges = CreateExtractor().Extract(model, root).Edges;
+
+        Assert.IsTrue(
+            edges.Any(e => e.Type == "REFERENCES"
+                && e.Source.Id.StartsWith($"TypeTestFixtures.PluginInspector.{method}(", StringComparison.Ordinal)
+                && e.Target.Id == targetId),
+            $"Expected REFERENCES edge from {method} to {targetId}. Edges found: [{string.Join(", ", edges.Select(e => $"{e.Source.Id} --{e.Type}--> {e.Target.Id}"))}]");
     }
 
     [TestMethod]
