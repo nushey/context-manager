@@ -4,22 +4,10 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace ContextManager.Analysis.Tests.Graph;
 
-/// <summary>
-/// Tests for GraphStore: add/query, BFS backward, shortest path, and serialization round-trip.
-/// All graphs are built by hand — no Roslyn involved.
-/// </summary>
 [TestClass]
 public class GraphStoreTests
 {
-    // Hand-built graph used by most tests:
-    //
-    //   A --CALLS--> B --CALLS--> C
-    //   A --INJECTS--> D
-    //   B --INJECTS--> D
-    //
-    // Node kinds: Class for all.
-
-    private static readonly GraphBaseline EmptyBaseline = new("/s.sln", [], [], [], []);
+    private static readonly GraphBaseline EmptyBaseline = new("/s.sln", [], [], [], false);
 
     private static GraphStore BuildSampleGraph()
     {
@@ -30,59 +18,55 @@ public class GraphStoreTests
         var c = new GraphNode("C", "Class");
         var d = new GraphNode("D", "Interface");
 
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddNode(c);
-        store.AddNode(d);
+        store = store.WithNode(a);
+        store = store.WithNode(b);
+        store = store.WithNode(c);
+        store = store.WithNode(d);
 
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, c, "CALLS"));
-        store.AddEdge(new GraphEdge(a, d, "INJECTS"));
-        store.AddEdge(new GraphEdge(b, d, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(a, b, "CALLS"));
+        store = store.WithEdge(new GraphEdge(b, c, "CALLS"));
+        store = store.WithEdge(new GraphEdge(a, d, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(b, d, "INJECTS"));
 
         return store;
     }
 
-    // ── AddNode / AddEdge ────────────────────────────────────────────────────
-
     [TestMethod]
-    public void AddNode_IncreasesNodeCount()
+    public void Node_IncreasesNodeCount()
     {
         var store = new GraphStore();
-        store.AddNode(new GraphNode("X", "Class"));
+        store = store.WithNode(new GraphNode("X", "Class"));
         Assert.AreEqual(1, store.NodeCount);
     }
 
     [TestMethod]
-    public void AddNode_DuplicateId_DoesNotIncreaseCount()
+    public void Node_DuplicateId_DoesNotIncreaseCount()
     {
         var store = new GraphStore();
-        store.AddNode(new GraphNode("X", "Class"));
-        store.AddNode(new GraphNode("X", "Interface")); // same Id, different Kind
+        store = store.WithNode(new GraphNode("X", "Class"));
+        store = store.WithNode(new GraphNode("X", "Interface"));
         Assert.AreEqual(1, store.NodeCount);
     }
 
     [TestMethod]
-    public void AddEdge_IncreasesEdgeCount()
+    public void Edge_IncreasesEdgeCount()
     {
         var store = BuildSampleGraph();
         Assert.AreEqual(4, store.EdgeCount);
     }
 
     [TestMethod]
-    public void AddEdge_AutoAddsEndpoints_WhenNotPreAdded()
+    public void Edge_AutoAddsEndpoints_WhenNotPreAdded()
     {
         var store = new GraphStore();
         var a = new GraphNode("A", "Class");
         var b = new GraphNode("B", "Class");
 
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
+        store = store.WithEdge(new GraphEdge(a, b, "CALLS"));
 
         Assert.AreEqual(2, store.NodeCount);
         Assert.AreEqual(1, store.EdgeCount);
     }
-
-    // ── TryGetNode ───────────────────────────────────────────────────────────
 
     [TestMethod]
     public void TryGetNode_ExistingId_ReturnsTrue()
@@ -106,8 +90,6 @@ public class GraphStoreTests
         Assert.IsNull(node);
     }
 
-    // ── GraphNode equality ───────────────────────────────────────────────────
-
     [TestMethod]
     public void GraphNode_EqualityIsById_NotByKind()
     {
@@ -127,15 +109,12 @@ public class GraphStoreTests
         Assert.AreNotEqual(n1, n2);
     }
 
-    // ── GetAggregatedNeighbors ───────────────────────────────────────────────
-
     [TestMethod]
     public void GetAggregatedNeighbors_TypeNode_ReturnsOutEntriesWithEdgeKindCounts()
     {
         var store = BuildSampleGraph();
         var neighbors = store.GetAggregatedNeighbors("A");
 
-        // A -> B (CALLS, out), A -> D (INJECTS, out) — out-entries in graph order
         Assert.AreEqual(2, neighbors.Count);
         Assert.AreEqual("B", neighbors[0].Id);
         Assert.AreEqual("out", neighbors[0].Direction);
@@ -148,11 +127,6 @@ public class GraphStoreTests
     [TestMethod]
     public void GetAggregatedNeighbors_StaticHelperConsumers_RolledUpToCallerTypesAsInEntries()
     {
-        // Guard --CONTAINS--> Guard.Check
-        // ServiceA --CONTAINS--> ServiceA.Validate
-        // ServiceB --CONTAINS--> ServiceB.Process
-        // ServiceA.Validate --CALLS--> Guard.Check
-        // ServiceB.Process --CALLS--> Guard.Check
         var store = new GraphStore();
         var guard = new GraphNode("Guard", "Class");
         var guardCheck = new GraphNode("Guard.Check", "Method");
@@ -161,15 +135,14 @@ public class GraphStoreTests
         var serviceB = new GraphNode("ServiceB", "Class");
         var serviceBProcess = new GraphNode("ServiceB.Process", "Method");
 
-        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
-        store.AddEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
+        store = store.WithEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+        store = store.WithEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
 
         var neighbors = store.GetAggregatedNeighbors("Guard");
 
-        // The two consumer types surface as in-entries rolled up from their method nodes.
         Assert.AreEqual(2, neighbors.Count);
         Assert.IsTrue(neighbors.All(n => n.Direction == "in"));
         Assert.IsTrue(neighbors.Any(n => n.Id == "ServiceA" && n.Kind == "Class" && n.EdgeKinds["CALLS"] == 1),
@@ -181,14 +154,13 @@ public class GraphStoreTests
     [TestMethod]
     public void GetAggregatedNeighbors_TypeNode_ExcludesOwnContainsMemberEdges()
     {
-        // Type with members but no external dependencies → empty result, no CONTAINS noise.
         var store = new GraphStore();
         var type = new GraphNode("Lonely", "Class");
         var m1 = new GraphNode("Lonely.A", "Method");
         var m2 = new GraphNode("Lonely.B", "Property");
 
-        store.AddEdge(new GraphEdge(type, m1, "CONTAINS"));
-        store.AddEdge(new GraphEdge(type, m2, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(type, m1, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(type, m2, "CONTAINS"));
 
         var neighbors = store.GetAggregatedNeighbors("Lonely");
 
@@ -198,8 +170,6 @@ public class GraphStoreTests
     [TestMethod]
     public void GetAggregatedNeighbors_SameCallerTypeViaMultipleMemberEdges_CountsAggregated()
     {
-        // Caller.M1 --CALLS--> Target.A and Caller.M2 --CALLS--> Target.B
-        // → ONE in-entry { Caller, CALLS: 2 } on the Target type query.
         var store = new GraphStore();
         var target = new GraphNode("Target", "Class");
         var targetA = new GraphNode("Target.A", "Method");
@@ -208,12 +178,12 @@ public class GraphStoreTests
         var callerM1 = new GraphNode("Caller.M1", "Method");
         var callerM2 = new GraphNode("Caller.M2", "Method");
 
-        store.AddEdge(new GraphEdge(target, targetA, "CONTAINS"));
-        store.AddEdge(new GraphEdge(target, targetB, "CONTAINS"));
-        store.AddEdge(new GraphEdge(caller, callerM1, "CONTAINS"));
-        store.AddEdge(new GraphEdge(caller, callerM2, "CONTAINS"));
-        store.AddEdge(new GraphEdge(callerM1, targetA, "CALLS"));
-        store.AddEdge(new GraphEdge(callerM2, targetB, "CALLS"));
+        store = store.WithEdge(new GraphEdge(target, targetA, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(target, targetB, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(caller, callerM1, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(caller, callerM2, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(callerM1, targetA, "CALLS"));
+        store = store.WithEdge(new GraphEdge(callerM2, targetB, "CALLS"));
 
         var neighbors = store.GetAggregatedNeighbors("Target");
 
@@ -226,13 +196,12 @@ public class GraphStoreTests
     [TestMethod]
     public void GetAggregatedNeighbors_DualDirectionNeighbor_YieldsOneEntryPerDirection()
     {
-        // A --CALLS--> B and B --REFERENCES--> A → for A: out {B, CALLS} then in {B, REFERENCES}.
         var store = new GraphStore();
         var a = new GraphNode("A", "Class");
         var b = new GraphNode("B", "Class");
 
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, a, "REFERENCES"));
+        store = store.WithEdge(new GraphEdge(a, b, "CALLS"));
+        store = store.WithEdge(new GraphEdge(b, a, "REFERENCES"));
 
         var neighbors = store.GetAggregatedNeighbors("A");
 
@@ -248,17 +217,15 @@ public class GraphStoreTests
     [TestMethod]
     public void GetAggregatedNeighbors_MemberNodeQuery_RollsUpNeighborsAndDropsDeclaringContains()
     {
-        // Querying Guard.Check directly: callers roll up to their types; the inbound
-        // CONTAINS edge from Guard (its declaring type) is structural noise and excluded.
         var store = new GraphStore();
         var guard = new GraphNode("Guard", "Class");
         var guardCheck = new GraphNode("Guard.Check", "Method");
         var serviceA = new GraphNode("ServiceA", "Class");
         var serviceAValidate = new GraphNode("ServiceA.Validate", "Method");
 
-        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+        store = store.WithEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
 
         var neighbors = store.GetAggregatedNeighbors("Guard.Check");
 
@@ -283,7 +250,6 @@ public class GraphStoreTests
         var store = BuildSampleGraph();
         var neighbors = store.GetAggregatedNeighbors("B");
 
-        // Out: C (CALLS), D (INJECTS) — In: A (CALLS)
         Assert.AreEqual(3, neighbors.Count);
         Assert.AreEqual("C", neighbors[0].Id);
         Assert.AreEqual("out", neighbors[0].Direction);
@@ -293,60 +259,6 @@ public class GraphStoreTests
         Assert.AreEqual("in", neighbors[2].Direction);
         Assert.AreEqual(1, neighbors[2].EdgeKinds["CALLS"]);
     }
-
-    // ── BfsBackward ──────────────────────────────────────────────────────────
-
-    [TestMethod]
-    public void BfsBackward_FromC_FollowingCalls_ReturnsBThenA()
-    {
-        var store = BuildSampleGraph();
-        // C <- B (CALLS) <- A (CALLS)
-        var result = store.BfsBackward("C", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(2, result.Count);
-        Assert.AreEqual("B", result[0]); // BFS level 1
-        Assert.AreEqual("A", result[1]); // BFS level 2
-    }
-
-    [TestMethod]
-    public void BfsBackward_FromD_FollowingInjects_ReturnsBothCallers()
-    {
-        var store = BuildSampleGraph();
-        // D <- A (INJECTS), D <- B (INJECTS)
-        var result = store.BfsBackward("D", new HashSet<string> { "INJECTS" }).Order().ToList();
-
-        CollectionAssert.AreEqual(new[] { "A", "B" }, result);
-    }
-
-    [TestMethod]
-    public void BfsBackward_EdgeTypeNotMatching_ReturnsEmpty()
-    {
-        var store = BuildSampleGraph();
-        // No INHERITS edges in the graph
-        var result = store.BfsBackward("C", new HashSet<string> { "INHERITS" });
-
-        Assert.AreEqual(0, result.Count);
-    }
-
-    [TestMethod]
-    public void BfsBackward_UnknownStartNode_ReturnsEmpty()
-    {
-        var store = BuildSampleGraph();
-        var result = store.BfsBackward("Z", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(0, result.Count);
-    }
-
-    [TestMethod]
-    public void BfsBackward_DoesNotIncludeStartNode()
-    {
-        var store = BuildSampleGraph();
-        var result = store.BfsBackward("C", new HashSet<string> { "CALLS" });
-
-        Assert.IsFalse(result.Contains("C"), "Start node must not appear in result");
-    }
-
-    // ── ShortestPath ─────────────────────────────────────────────────────────
 
     [TestMethod]
     public void ShortestPath_DirectConnection_ReturnsTwoNodes()
@@ -379,7 +291,6 @@ public class GraphStoreTests
     public void ShortestPath_NoPathExists_ReturnsEmpty()
     {
         var store = BuildSampleGraph();
-        // C has no out-edges, so C -> A is impossible
         var path = store.ShortestPath("C", "A");
 
         Assert.AreEqual(0, path.Count);
@@ -403,69 +314,14 @@ public class GraphStoreTests
         Assert.AreEqual(0, path.Count);
     }
 
-    // ── Cycles: BfsBackward + ShortestPath ──────────────────────────────────
-    // Regression tests for "infinite loop" reports on cyclic graphs.
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_SelfLoop_DoesNotLoop()
-    {
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        store.AddNode(a);
-        store.AddEdge(new GraphEdge(a, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
-
-        Assert.AreEqual(0, result.Count, "Self-loop must not include A in its own backward set.");
-    }
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_TwoNodeCycle_TerminatesAndReturnsOtherNode()
-    {
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        var b = new GraphNode("B", "Class");
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" });
-
-        CollectionAssert.AreEqual(new[] { "B" }, result.ToList());
-    }
-
-    [TestMethod]
-    [Timeout(5_000)]
-    public void BfsBackward_ThreeNodeCycle_VisitsEachOnce()
-    {
-        // A -> B -> C -> A
-        var store = new GraphStore();
-        var a = new GraphNode("A", "Class");
-        var b = new GraphNode("B", "Class");
-        var c = new GraphNode("C", "Class");
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddNode(c);
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, c, "CALLS"));
-        store.AddEdge(new GraphEdge(c, a, "CALLS"));
-
-        var result = store.BfsBackward("A", new HashSet<string> { "CALLS" }).Order().ToList();
-
-        CollectionAssert.AreEqual(new[] { "B", "C" }, result);
-    }
-
     [TestMethod]
     [Timeout(5_000)]
     public void ShortestPath_SelfLoop_FindsTrivialPath()
     {
         var store = new GraphStore();
         var a = new GraphNode("A", "Class");
-        store.AddNode(a);
-        store.AddEdge(new GraphEdge(a, a, "CALLS"));
+        store = store.WithNode(a);
+        store = store.WithEdge(new GraphEdge(a, a, "CALLS"));
 
         var path = store.ShortestPath("A", "A");
 
@@ -476,65 +332,34 @@ public class GraphStoreTests
     [Timeout(5_000)]
     public void ShortestPath_CycleAlongTheWay_TerminatesAndReturnsCorrectPath()
     {
-        // A -> B -> C, and B -> A creating a cycle.
         var store = new GraphStore();
         var a = new GraphNode("A", "Class");
         var b = new GraphNode("B", "Class");
         var c = new GraphNode("C", "Class");
-        store.AddNode(a);
-        store.AddNode(b);
-        store.AddNode(c);
-        store.AddEdge(new GraphEdge(a, b, "CALLS"));
-        store.AddEdge(new GraphEdge(b, c, "CALLS"));
-        store.AddEdge(new GraphEdge(b, a, "CALLS"));
+        store = store.WithNode(a);
+        store = store.WithNode(b);
+        store = store.WithNode(c);
+        store = store.WithEdge(new GraphEdge(a, b, "CALLS"));
+        store = store.WithEdge(new GraphEdge(b, c, "CALLS"));
+        store = store.WithEdge(new GraphEdge(b, a, "CALLS"));
 
         var path = store.ShortestPath("A", "C");
 
         CollectionAssert.AreEqual(new[] { "A", "B", "C" }, path.ToList());
     }
 
-    // ── Scale + duplicate-instance edges (regression hypotheses for "infinite loop") ──
-
-    [TestMethod]
-    [Timeout(15_000)]
-    public void BfsBackward_LargeCyclicGraph_TerminatesQuickly()
-    {
-        // 5000 nodes in a giant SCC: each node points to the next + cross-edges back.
-        var store = new GraphStore();
-        const int n = 5000;
-        for (var i = 0; i < n; i++)
-            store.AddNode(new GraphNode($"N{i}", "Class"));
-
-        for (var i = 0; i < n; i++)
-        {
-            var src = new GraphNode($"N{i}", "Class");
-            var nextId = (i + 1) % n;
-            var crossId = (i + 7) % n; // cross-edge to introduce many cycles
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{nextId}", "Class"), "CALLS"));
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{crossId}", "Class"), "CALLS"));
-        }
-
-        var result = store.BfsBackward("N0", new HashSet<string> { "CALLS" });
-
-        // Whole graph is strongly connected → every other node reaches N0.
-        Assert.AreEqual(n - 1, result.Count, $"Expected {n - 1} ancestors, got {result.Count}");
-    }
-
     [TestMethod]
     [Timeout(15_000)]
     public void ShortestPath_LargeCyclicGraph_TerminatesQuickly()
     {
-        var store = new GraphStore();
         const int n = 5000;
-        for (var i = 0; i < n; i++)
-            store.AddNode(new GraphNode($"N{i}", "Class"));
-
-        for (var i = 0; i < n; i++)
+        var nodes = Enumerable.Range(0, n).Select(i => new GraphNode($"N{i}", "Class")).ToList();
+        var edges = nodes.SelectMany((src, i) => new[]
         {
-            var src = new GraphNode($"N{i}", "Class");
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{(i + 1) % n}", "Class"), "CALLS"));
-            store.AddEdge(new GraphEdge(src, new GraphNode($"N{(i + 7) % n}", "Class"), "CALLS"));
-        }
+            new GraphEdge(src, nodes[(i + 1) % n], "CALLS"),
+            new GraphEdge(src, nodes[(i + 7) % n], "CALLS"),
+        }).ToList();
+        var store = new GraphStore().With(nodes, edges);
 
         var path = store.ShortestPath("N0", $"N{n - 1}");
 
@@ -545,24 +370,18 @@ public class GraphStoreTests
 
     [TestMethod]
     [Timeout(5_000)]
-    public void AddEdge_WithFreshNodeInstance_StillReachableViaInEdges()
+    public void Edge_WithFreshNodeInstance_StillReachableViaInEdges()
     {
-        // Reproduces EdgeExtractor's pattern: it creates `new GraphNode(...)` per edge
-        // instead of reusing the instance stored in _graph. This test guards that
-        // BidirectionalGraph treats them as equal via GraphNode.Equals(Id).
         var store = new GraphStore();
-        store.AddNode(new GraphNode("A", "Class"));
-        store.AddNode(new GraphNode("B", "Class"));
+        store = store.WithNode(new GraphNode("A", "Class"));
+        store = store.WithNode(new GraphNode("B", "Class"));
 
-        // Note: brand-new instances, not the ones added above.
-        store.AddEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("A", "Class"), new GraphNode("B", "Class"), "CALLS"));
 
-        var result = store.BfsBackward("B", new HashSet<string> { "CALLS" });
+        var result = store.ImpactBackward("B", new HashSet<string> { "CALLS" });
 
         CollectionAssert.AreEqual(new[] { "A" }, result.ToList());
     }
-
-    // ── Serialize / Deserialize ──────────────────────────────────────────────
 
     [TestMethod]
     public void Serialize_ProducesNodesAndEdgesKeys()
@@ -629,8 +448,7 @@ public class GraphStoreTests
         var store = BuildSampleGraph();
         var json = store.Serialize();
 
-        // Pollute with extra nodes
-        store.AddNode(new GraphNode("EXTRA", "Record"));
+        store = store.WithNode(new GraphNode("EXTRA", "Record"));
 
         store.Deserialize(json);
 
@@ -641,9 +459,6 @@ public class GraphStoreTests
     [TestMethod]
     public void Deserialize_MalformedJson_ThrowsJsonException()
     {
-        // Program.cs wraps the startup graph load in try/catch and continues with an empty store
-        // on failure; this test pins the lower-level contract that a corrupt payload is rejected
-        // rather than silently producing a partial graph.
         var store = new GraphStore();
 
         try
@@ -653,74 +468,31 @@ public class GraphStoreTests
         }
         catch (JsonException)
         {
-            // expected — previous (empty) graph is preserved, no partial state.
         }
     }
 
-    // ── Clear ────────────────────────────────────────────────────────────────
-
-    [TestMethod]
-    public void Clear_ResetsNodeAndEdgeCount()
-    {
-        var store = BuildSampleGraph();
-        store.Clear();
-
-        Assert.AreEqual(0, store.NodeCount);
-        Assert.AreEqual(0, store.EdgeCount);
-    }
-
-    [TestMethod]
-    public void Clear_TryGetNode_ReturnsFalse()
-    {
-        var store = BuildSampleGraph();
-        store.Clear();
-
-        Assert.IsFalse(store.TryGetNode("A", out _));
-    }
-
-    // ── ImpactBackward ───────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Member roll-up: CallerType.method --CALLS--> StartType.method.
-    /// BfsBackward returns [] (no type→type CALLS), ImpactBackward returns CallerType.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_MemberCallsMember_RollsUpToCallerType()
     {
-        // StartType --CONTAINS--> StartType.method
-        // CallerType --CONTAINS--> CallerType.method
-        // CallerType.method --CALLS--> StartType.method
         var store = new GraphStore();
         var startType = new GraphNode("StartType", "Class");
         var startMethod = new GraphNode("StartType.DoWork", "Method");
         var callerType = new GraphNode("CallerType", "Class");
         var callerMethod = new GraphNode("CallerType.Execute", "Method");
 
-        store.AddEdge(new GraphEdge(startType, startMethod, "CONTAINS"));
-        store.AddEdge(new GraphEdge(callerType, callerMethod, "CONTAINS"));
-        store.AddEdge(new GraphEdge(callerMethod, startMethod, "CALLS"));
+        store = store.WithEdge(new GraphEdge(startType, startMethod, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(callerType, callerMethod, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(callerMethod, startMethod, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
-
-        var bfsResult = store.BfsBackward("StartType", edgeTypes);
-        Assert.AreEqual(0, bfsResult.Count, "BfsBackward must see no inbound edges on the type node");
 
         var impactResult = store.ImpactBackward("StartType", edgeTypes);
         CollectionAssert.AreEqual(new[] { "CallerType" }, impactResult.ToList());
     }
 
-    /// <summary>
-    /// Static utility class scenario: Guard.Check is called by multiple types' methods.
-    /// ImpactBackward on Guard returns all calling types.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_StaticUtility_ReturnsAllCallerTypes()
     {
-        // Guard --CONTAINS--> Guard.Check
-        // ServiceA --CONTAINS--> ServiceA.Validate
-        // ServiceB --CONTAINS--> ServiceB.Process
-        // ServiceA.Validate --CALLS--> Guard.Check
-        // ServiceB.Process --CALLS--> Guard.Check
         var store = new GraphStore();
         var guard = new GraphNode("Guard", "Class");
         var guardCheck = new GraphNode("Guard.Check", "Method");
@@ -729,11 +501,11 @@ public class GraphStoreTests
         var serviceB = new GraphNode("ServiceB", "Class");
         var serviceBProcess = new GraphNode("ServiceB.Process", "Method");
 
-        store.AddEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
-        store.AddEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
-        store.AddEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
+        store = store.WithEdge(new GraphEdge(guard, guardCheck, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceA, serviceAValidate, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceB, serviceBProcess, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(serviceAValidate, guardCheck, "CALLS"));
+        store = store.WithEdge(new GraphEdge(serviceBProcess, guardCheck, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("Guard", edgeTypes).OrderBy(x => x).ToList();
@@ -741,22 +513,16 @@ public class GraphStoreTests
         CollectionAssert.AreEqual(new[] { "ServiceA", "ServiceB" }, result);
     }
 
-    /// <summary>
-    /// Interface bridging: IRepository is injected into Controller.
-    /// ImpactBackward on ConcreteRepository (implements IRepository) returns Controller.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_ConcreteClass_ReachesInterfaceConsumers()
     {
-        // ConcreteRepository --IMPLEMENTS--> IRepository
-        // Controller --INJECTS--> IRepository
         var store = new GraphStore();
         var concreteRepo = new GraphNode("ConcreteRepository", "Class");
         var iRepo = new GraphNode("IRepository", "Interface");
         var controller = new GraphNode("Controller", "Class");
 
-        store.AddEdge(new GraphEdge(concreteRepo, iRepo, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(controller, iRepo, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(concreteRepo, iRepo, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(controller, iRepo, "INJECTS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("ConcreteRepository", edgeTypes);
@@ -764,16 +530,9 @@ public class GraphStoreTests
         CollectionAssert.AreEqual(new[] { "Controller" }, result.ToList());
     }
 
-    /// <summary>
-    /// Multi-interface bridging: a class implementing two interfaces reaches consumers of both.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_MultipleInterfaces_BridgesThroughAll()
     {
-        // Service --IMPLEMENTS--> IFoo
-        // Service --IMPLEMENTS--> IBar
-        // ConsumerA --INJECTS--> IFoo
-        // ConsumerB --INJECTS--> IBar
         var store = new GraphStore();
         var service = new GraphNode("Service", "Class");
         var iFoo = new GraphNode("IFoo", "Interface");
@@ -781,10 +540,10 @@ public class GraphStoreTests
         var consumerA = new GraphNode("ConsumerA", "Class");
         var consumerB = new GraphNode("ConsumerB", "Class");
 
-        store.AddEdge(new GraphEdge(service, iFoo, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(service, iBar, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(consumerA, iFoo, "INJECTS"));
-        store.AddEdge(new GraphEdge(consumerB, iBar, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(service, iFoo, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(service, iBar, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(consumerA, iFoo, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(consumerB, iBar, "INJECTS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("Service", edgeTypes).OrderBy(x => x).ToList();
@@ -792,45 +551,30 @@ public class GraphStoreTests
         CollectionAssert.AreEqual(new[] { "ConsumerA", "ConsumerB" }, result);
     }
 
-    /// <summary>
-    /// Transitive bridging: Controller injects IOuter; Outer implements IOuter.
-    /// ImpactBackward on Outer bridges through IOuter and returns Controller,
-    /// exercising the interface-bridging seed without a depth parameter.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_TransitiveChain_ControllerInjectsInterfaceImplementedByConcrete()
     {
-        // Outer --IMPLEMENTS--> IOuter
-        // Controller --INJECTS--> IOuter
-        // ServiceB --INJECTS--> Outer   (direct, to verify non-interface path still works)
         var store = new GraphStore();
         var outer = new GraphNode("Outer", "Class");
         var iOuter = new GraphNode("IOuter", "Interface");
         var controller = new GraphNode("Controller", "Class");
         var serviceB = new GraphNode("ServiceB", "Class");
 
-        store.AddEdge(new GraphEdge(outer, iOuter, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(controller, iOuter, "INJECTS"));
-        store.AddEdge(new GraphEdge(serviceB, outer, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(outer, iOuter, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(controller, iOuter, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(serviceB, outer, "INJECTS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("Outer", edgeTypes).OrderBy(x => x).ToList();
 
-        // Controller reaches Outer via interface bridge; ServiceB directly injects Outer.
         CollectionAssert.AreEqual(new[] { "Controller", "ServiceB" }, result);
         CollectionAssert.DoesNotContain(result, "IOuter");
         CollectionAssert.DoesNotContain(result, "Outer");
     }
 
-    /// <summary>
-    /// REFERENCES and RETURNS inbound edges are rolled up to the type level.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_ReferencesAndReturnsEdges_RolledUpToType()
     {
-        // StartType
-        // UserType --CONTAINS--> UserType.Prop (REFERENCES StartType)
-        // ProviderType --CONTAINS--> ProviderType.Get (RETURNS StartType)
         var store = new GraphStore();
         var startType = new GraphNode("StartType", "Class");
         var userType = new GraphNode("UserType", "Class");
@@ -838,11 +582,11 @@ public class GraphStoreTests
         var providerType = new GraphNode("ProviderType", "Class");
         var providerGet = new GraphNode("ProviderType.Get", "Method");
 
-        store.AddNode(startType);
-        store.AddEdge(new GraphEdge(userType, userProp, "CONTAINS"));
-        store.AddEdge(new GraphEdge(userProp, startType, "REFERENCES"));
-        store.AddEdge(new GraphEdge(providerType, providerGet, "CONTAINS"));
-        store.AddEdge(new GraphEdge(providerGet, startType, "RETURNS"));
+        store = store.WithNode(startType);
+        store = store.WithEdge(new GraphEdge(userType, userProp, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(userProp, startType, "REFERENCES"));
+        store = store.WithEdge(new GraphEdge(providerType, providerGet, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(providerGet, startType, "RETURNS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("StartType", edgeTypes).OrderBy(x => x).ToList();
@@ -850,18 +594,9 @@ public class GraphStoreTests
         CollectionAssert.AreEqual(new[] { "ProviderType", "UserType" }, result);
     }
 
-    /// <summary>
-    /// Seed nodes (start type, its members, bridged interfaces, their members) must not appear
-    /// in the result.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_SeedNodes_ExcludedFromResult()
     {
-        // StartType --CONTAINS--> StartType.M
-        // StartType --IMPLEMENTS--> IFace
-        // IFace --CONTAINS--> IFace.Contract
-        // CallerType --CONTAINS--> CallerType.Use
-        // CallerType.Use --CALLS--> StartType.M
         var store = new GraphStore();
         var startType = new GraphNode("StartType", "Class");
         var startM = new GraphNode("StartType.M", "Method");
@@ -870,11 +605,11 @@ public class GraphStoreTests
         var callerType = new GraphNode("CallerType", "Class");
         var callerUse = new GraphNode("CallerType.Use", "Method");
 
-        store.AddEdge(new GraphEdge(startType, startM, "CONTAINS"));
-        store.AddEdge(new GraphEdge(startType, iFace, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(iFace, ifaceContract, "CONTAINS"));
-        store.AddEdge(new GraphEdge(callerType, callerUse, "CONTAINS"));
-        store.AddEdge(new GraphEdge(callerUse, startM, "CALLS"));
+        store = store.WithEdge(new GraphEdge(startType, startM, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(startType, iFace, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(iFace, ifaceContract, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(callerType, callerUse, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(callerUse, startM, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("StartType", edgeTypes);
@@ -886,64 +621,45 @@ public class GraphStoreTests
         CollectionAssert.AreEqual(new[] { "CallerType" }, result.ToList());
     }
 
-    /// <summary>
-    /// Self-referential graph: a method that calls itself — must terminate.
-    /// </summary>
     [TestMethod]
     [Timeout(5_000)]
     public void ImpactBackward_SelfReferential_Terminates()
     {
-        // RecursiveType --CONTAINS--> RecursiveType.Recurse
-        // RecursiveType.Recurse --CALLS--> RecursiveType.Recurse (self-loop)
         var store = new GraphStore();
         var t = new GraphNode("RecursiveType", "Class");
         var m = new GraphNode("RecursiveType.Recurse", "Method");
 
-        store.AddEdge(new GraphEdge(t, m, "CONTAINS"));
-        store.AddEdge(new GraphEdge(m, m, "CALLS"));
+        store = store.WithEdge(new GraphEdge(t, m, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(m, m, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("RecursiveType", edgeTypes);
 
-        // The only caller of Recurse is itself (a seed member), so nothing reported.
         Assert.AreEqual(0, result.Count);
     }
 
-    /// <summary>
-    /// Cyclic type graph: A.m calls B.m, B.m calls A.m — must terminate and report each type once.
-    /// </summary>
     [TestMethod]
     [Timeout(5_000)]
     public void ImpactBackward_CyclicTypes_TerminatesAndDeduplicates()
     {
-        // TypeA --CONTAINS--> TypeA.M
-        // TypeB --CONTAINS--> TypeB.M
-        // TypeA.M --CALLS--> TypeB.M
-        // TypeB.M --CALLS--> TypeA.M
         var store = new GraphStore();
         var typeA = new GraphNode("TypeA", "Class");
         var typeAM = new GraphNode("TypeA.M", "Method");
         var typeB = new GraphNode("TypeB", "Class");
         var typeBM = new GraphNode("TypeB.M", "Method");
 
-        store.AddEdge(new GraphEdge(typeA, typeAM, "CONTAINS"));
-        store.AddEdge(new GraphEdge(typeB, typeBM, "CONTAINS"));
-        store.AddEdge(new GraphEdge(typeAM, typeBM, "CALLS"));
-        store.AddEdge(new GraphEdge(typeBM, typeAM, "CALLS"));
+        store = store.WithEdge(new GraphEdge(typeA, typeAM, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(typeB, typeBM, "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(typeAM, typeBM, "CALLS"));
+        store = store.WithEdge(new GraphEdge(typeBM, typeAM, "CALLS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("TypeA", edgeTypes);
 
-        // TypeB calls TypeA.M, so TypeB is impacted.
-        // TypeA.M is a seed, TypeA is start — neither reported.
-        // TypeB appears exactly once.
         Assert.AreEqual(1, result.Count);
         Assert.AreEqual("TypeB", result[0]);
     }
 
-    /// <summary>
-    /// UnknownNode start returns empty without throwing.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_UnknownStartNode_ReturnsEmpty()
     {
@@ -953,18 +669,6 @@ public class GraphStoreTests
         Assert.AreEqual(0, result.Count);
     }
 
-    /// <summary>
-    /// Two-hop cross-layer chain seeded at the concrete Service:
-    ///   Controller --INJECTS--> IOrchestrator
-    ///   Orchestrator --IMPLEMENTS--> IOrchestrator
-    ///   Orchestrator --INJECTS--> IService
-    ///   Service --IMPLEMENTS--> IService
-    ///
-    /// ImpactBackward("Service", ...) must bridge Service→IService, then discover Orchestrator
-    /// (which injects IService), then bridge Orchestrator→IOrchestrator, then discover Controller
-    /// (which injects IOrchestrator). Both Orchestrator and Controller must appear; interfaces
-    /// and Service itself must be suppressed.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_TwoHopCrossLayer_ServiceSeed_ReachesController()
     {
@@ -975,10 +679,10 @@ public class GraphStoreTests
         var iOrchestrator = new GraphNode("IOrchestrator", "Interface");
         var controller = new GraphNode("Controller", "Class");
 
-        store.AddEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
-        store.AddEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("Service", edgeTypes);
@@ -990,17 +694,6 @@ public class GraphStoreTests
         CollectionAssert.DoesNotContain(result.ToList(), "IOrchestrator");
     }
 
-    /// <summary>
-    /// Two-hop cross-layer chain seeded at the interface IService:
-    ///   Controller --INJECTS--> IOrchestrator
-    ///   Orchestrator --IMPLEMENTS--> IOrchestrator
-    ///   Orchestrator --INJECTS--> IService
-    ///   Service --IMPLEMENTS--> IService
-    ///
-    /// ImpactBackward("IService", ...) must discover Orchestrator (which injects IService),
-    /// then bridge Orchestrator→IOrchestrator, then discover Controller (which injects IOrchestrator).
-    /// Both Orchestrator and Controller must appear; interfaces must be suppressed.
-    /// </summary>
     [TestMethod]
     public void ImpactBackward_TwoHopCrossLayer_IServiceSeed_ReachesController()
     {
@@ -1011,10 +704,10 @@ public class GraphStoreTests
         var iOrchestrator = new GraphNode("IOrchestrator", "Interface");
         var controller = new GraphNode("Controller", "Class");
 
-        store.AddEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
-        store.AddEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
-        store.AddEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(service, iService, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(orchestrator, iOrchestrator, "IMPLEMENTS"));
+        store = store.WithEdge(new GraphEdge(orchestrator, iService, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(controller, iOrchestrator, "INJECTS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
         var result = store.ImpactBackward("IService", edgeTypes);
@@ -1025,10 +718,6 @@ public class GraphStoreTests
         CollectionAssert.DoesNotContain(result.ToList(), "IOrchestrator");
     }
 
-    // ── Concurrency: snapshot-swap (§1.1 / AC1) ───────────────────────────────
-    // Readers must never throw InvalidOperationException (collection modified) and never observe
-    // a half-built graph while a rebuild is staged; the committed snapshot must be visible after.
-
     [TestMethod]
     [Timeout(15_000)]
     public void ConcurrentReaders_AmidRebuild_NeverThrowAndObserveCommittedSnapshot()
@@ -1038,7 +727,6 @@ public class GraphStoreTests
         Exception? readerException = null;
         var writerDone = new ManualResetEventSlim(false);
 
-        // Multiple readers hammer reads for the whole rebuild window.
         var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
         {
             try
@@ -1058,8 +746,6 @@ public class GraphStoreTests
             }
         })).ToArray();
 
-        // One writer: stage a much larger candidate from document records, then publish it.
-        // Staging never touches the published snapshot, so readers keep seeing A..D.
         var writer = Task.Run(() =>
         {
             var c = new GraphNode("C", "Class");
@@ -1071,7 +757,7 @@ public class GraphStoreTests
             edges.AddRange(Enumerable.Range(0, 300).Select(i => new GraphEdge(c, new GraphNode($"N{i}", "Class"), "CALLS")));
             var record = new GraphDocumentRecord("P", "/doc.cs", "checksum", 0, 0, [], edges);
 
-            var candidate = store.Stage([], [record], EmptyBaseline, fromEmpty: true);
+            var candidate = new GraphStore().Stage([], [record], EmptyBaseline);
             store.Publish(candidate);
             writerDone.Set();
         });
@@ -1082,36 +768,29 @@ public class GraphStoreTests
         Assert.IsNull(readerException,
             $"Readers must not throw during a concurrent rebuild. Got: {readerException}");
 
-        // The committed snapshot must be visible to a post-commit read.
         Assert.IsTrue(store.NodeCount >= 300, "Published candidate must be visible after Publish.");
         var neighbors = store.GetAggregatedNeighbors("A");
         Assert.IsTrue(neighbors.Any(n => n.Id == "B"),
             "Post-commit read must see the rebuilt graph (A → B).");
     }
 
-    // ── Cancellation (§1.6 / AC5) ─────────────────────────────────────────────
-    // An already-cancelled token must abort a traversal via OperationCanceledException at the
-    // first loop checkpoint, rather than running to completion.
-
     [TestMethod]
     [Timeout(10_000)]
     public void ImpactBackward_PreCancelledToken_ThrowsOperationCanceledException()
     {
-        // A 60-node chain: T(i+1).M --CALLS--> T(i).M, with each T(i) CONTAINS T(i).M.
-        // Backward impact from T0 reaches the whole chain, so there is work to (not) do.
         var store = new GraphStore();
         const int n = 60;
         for (var i = 0; i < n; i++)
         {
-            store.AddNode(new GraphNode($"T{i}", "Class"));
-            store.AddEdge(new GraphEdge(
+            store = store.WithNode(new GraphNode($"T{i}", "Class"));
+            store = store.WithEdge(new GraphEdge(
                 new GraphNode($"T{i}", "Class"),
                 new GraphNode($"T{i}.M", "Method"),
                 "CONTAINS"));
         }
         for (var i = 0; i < n - 1; i++)
         {
-            store.AddEdge(new GraphEdge(
+            store = store.WithEdge(new GraphEdge(
                 new GraphNode($"T{i + 1}.M", "Method"),
                 new GraphNode($"T{i}.M", "Method"),
                 "CALLS"));
@@ -1123,67 +802,24 @@ public class GraphStoreTests
 
         try
         {
-            store.ImpactBackward("T0", edgeTypes, out _, cts.Token);
+            store.ImpactBackward("T0", edgeTypes, cts.Token);
             Assert.Fail("Expected OperationCanceledException for a pre-cancelled token.");
         }
         catch (OperationCanceledException)
         {
-            // expected — cancellation propagated into the traversal loop.
         }
     }
 
-    // ── Impact cap (§3.1 / AC5) ──────────────────────────────────────────────
-    // The capped overload returns the BFS-ordered prefix and flips `truncated`; the uncapped
-    // overload is unchanged.
-
     [TestMethod]
-    public void ImpactBackward_Capped_ReturnsPrefixAndSetsTruncated()
-    {
-        // 12-type chain: T(i) CONTAINS T(i).M, and T(i+1).M --CALLS--> T(i).M.
-        // ImpactBackward("T0") reaches T1..T11 (11 types) in BFS order.
-        var store = new GraphStore();
-        const int n = 12;
-        for (var i = 0; i < n; i++)
-        {
-            store.AddEdge(new GraphEdge(
-                new GraphNode($"T{i}", "Class"),
-                new GraphNode($"T{i}.M", "Method"),
-                "CONTAINS"));
-        }
-        for (var i = 0; i < n - 1; i++)
-        {
-            store.AddEdge(new GraphEdge(
-                new GraphNode($"T{i + 1}.M", "Method"),
-                new GraphNode($"T{i}.M", "Method"),
-                "CALLS"));
-        }
-
-        var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS" };
-
-        // Capped: first 3 in BFS order, truncated flag set.
-        var capped = store.ImpactBackward("T0", edgeTypes, maxResults: 3, out var truncated, out _);
-        Assert.AreEqual(3, capped.Count);
-        Assert.IsTrue(truncated);
-        CollectionAssert.AreEqual(new[] { "T1", "T2", "T3" }, capped.ToList());
-
-        // Uncapped: the whole chain, unchanged.
-        var full = store.ImpactBackward("T0", edgeTypes);
-        Assert.AreEqual(11, full.Count);
-        CollectionAssert.AreEqual(
-            Enumerable.Range(1, 11).Select(i => $"T{i}").ToList(),
-            full.ToList());
-    }
-
-    [TestMethod]
-    public void AddEdge_PreservesDifferentKindsAndDeduplicatesTriplesAcrossRoundTrip()
+    public void Edge_PreservesDifferentKindsAndDeduplicatesTriplesAcrossRoundTrip()
     {
         var store = new GraphStore();
         var source = new GraphNode("Source", "Class");
         var target = new GraphNode("Target", "Class");
 
-        store.AddEdge(new GraphEdge(source, target, "INJECTS"));
-        store.AddEdge(new GraphEdge(source, target, "REFERENCES"));
-        store.AddEdge(new GraphEdge(source, target, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(source, target, "INJECTS"));
+        store = store.WithEdge(new GraphEdge(source, target, "REFERENCES"));
+        store = store.WithEdge(new GraphEdge(source, target, "INJECTS"));
 
         Assert.AreEqual(2, store.EdgeCount);
         var restored = new GraphStore();
@@ -1195,28 +831,14 @@ public class GraphStoreTests
     }
 
     [TestMethod]
-    public void Deserialize_DeduplicatesRepeatedTriples()
-    {
-        const string json = """
-            {"nodes":[{"id":"A","kind":"Class"},{"id":"B","kind":"Class"}],
-             "edges":[{"source":"A","target":"B","type":"CALLS"},{"source":"A","target":"B","type":"CALLS"}]}
-            """;
-        var store = new GraphStore();
-
-        store.Deserialize(json);
-
-        Assert.AreEqual(1, store.EdgeCount);
-    }
-
-    [TestMethod]
     public void ImpactBackward_MemberConsumerContinuesThroughDeclaringTypeAndInheritance()
     {
         var store = new GraphStore();
-        store.AddEdge(new GraphEdge(new GraphNode("Utility", "Class"), new GraphNode("Utility.Run", "Method"), "CONTAINS"));
-        store.AddEdge(new GraphEdge(new GraphNode("Service", "Class"), new GraphNode("Service.Run", "Method"), "CONTAINS"));
-        store.AddEdge(new GraphEdge(new GraphNode("Service.Run", "Method"), new GraphNode("Utility.Run", "Method"), "CALLS"));
-        store.AddEdge(new GraphEdge(new GraphNode("Controller", "Class"), new GraphNode("Service", "Class"), "INJECTS"));
-        store.AddEdge(new GraphEdge(new GraphNode("Derived", "Class"), new GraphNode("Utility", "Class"), "INHERITS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Utility", "Class"), new GraphNode("Utility.Run", "Method"), "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Service", "Class"), new GraphNode("Service.Run", "Method"), "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Service.Run", "Method"), new GraphNode("Utility.Run", "Method"), "CALLS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Controller", "Class"), new GraphNode("Service", "Class"), "INJECTS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Derived", "Class"), new GraphNode("Utility", "Class"), "INHERITS"));
 
         var edgeTypes = new HashSet<string> { "CALLS", "INJECTS", "REFERENCES", "RETURNS", "INHERITS" };
         var result = store.ImpactBackward("Utility", edgeTypes);
@@ -1240,14 +862,14 @@ public class GraphStoreTests
     public void GetAggregatedNeighbors_HighFanIn_UsesOwnerIndexAndPreservesEncounterOrder()
     {
         var store = new GraphStore();
-        store.AddEdge(new GraphEdge(new GraphNode("Target", "Class"), new GraphNode("Target.Run", "Method"), "CONTAINS"));
+        store = store.WithEdge(new GraphEdge(new GraphNode("Target", "Class"), new GraphNode("Target.Run", "Method"), "CONTAINS"));
 
         for (var i = 0; i < 1_000; i++)
         {
             var owner = new GraphNode($"Consumer{i}", "Class");
             var member = new GraphNode($"Consumer{i}.Run", "Method");
-            store.AddEdge(new GraphEdge(owner, member, "CONTAINS"));
-            store.AddEdge(new GraphEdge(member, new GraphNode("Target.Run", "Method"), "CALLS"));
+            store = store.WithEdge(new GraphEdge(owner, member, "CONTAINS"));
+            store = store.WithEdge(new GraphEdge(member, new GraphNode("Target.Run", "Method"), "CALLS"));
         }
 
         var neighbors = store.GetAggregatedNeighbors("Target");
@@ -1257,8 +879,6 @@ public class GraphStoreTests
         Assert.AreEqual("Consumer999", neighbors[^1].Id);
     }
 
-    // ── Provenance and contribution deltas ───────────────────────────────────
-
     private static GraphNode N(string id, string kind = "Class", string? file = null) => new(id, kind, file);
 
     private static GraphDocumentRecord Doc(string path, int order, IReadOnlyList<GraphNode> nodes, IReadOnlyList<GraphEdge> edges) =>
@@ -1267,14 +887,14 @@ public class GraphStoreTests
     private static string GraphOnly(GraphStore store)
     {
         using var json = JsonDocument.Parse(store.Serialize());
-        return json.RootElement.GetProperty("nodes").GetRawText() + json.RootElement.GetProperty("edges").GetRawText();
+        return json.RootElement.GetProperty("documents").GetRawText();
     }
 
     [TestMethod]
     public void Serialize_NodeFile_RoundTripsAndReachesNeighbors()
     {
         var store = new GraphStore();
-        store.AddEdge(new GraphEdge(N("A", file: "/src/A.cs"), N("B", file: "/src/B.cs"), "CALLS"));
+        store = store.WithEdge(new GraphEdge(N("A", file: "/src/A.cs"), N("B", file: "/src/B.cs"), "CALLS"));
 
         var restored = new GraphStore();
         restored.Deserialize(store.Serialize());
@@ -1285,31 +905,29 @@ public class GraphStoreTests
     }
 
     [TestMethod]
-    public void Deserialize_LegacyPayloadWithoutDocuments_IsQueryableWithoutProvenance()
+    public void Deserialize_PayloadWithoutDocuments_LoadsEmptyGraph()
     {
         const string json = """{"nodes":[{"id":"A","kind":"Class"},{"id":"B","kind":"Class"}],"edges":[{"source":"A","target":"B","type":"CALLS"}]}""";
-        var store = new GraphStore();
+        var store = BuildSampleGraph();
 
         store.Deserialize(json);
 
-        Assert.IsFalse(store.HasProvenance);
+        Assert.AreEqual(0, store.NodeCount);
         Assert.IsNull(store.Revision);
         Assert.IsNull(store.Baseline);
-        CollectionAssert.AreEqual(new[] { "B" }, store.ShortestPath("A", "B").Skip(1).ToList());
-        Assert.IsFalse(store.Serialize().Contains("documents", StringComparison.Ordinal));
     }
 
     [TestMethod]
     public void Stage_WithDocuments_RoundTripsProvenanceRevisionAndBaseline()
     {
         var store = new GraphStore();
-        var baseline = new GraphBaseline("/s.sln", [], [new GraphTrackedFile("/s.sln", "abc")], ["/a.cs"], [new GraphBuildDiagnostic("Warning", "w")]);
-        var candidate = store.Stage([], [Doc("/a.cs", 0, [N("A")], [new GraphEdge(N("A"), N("B"), "CALLS")])], baseline, fromEmpty: true);
+        var baseline = new GraphBaseline("/s.sln", [], [new GraphTrackedFile("/s.sln", "abc")], ["/a.cs"], true);
+        var candidate = new GraphStore().Stage([], [Doc("/a.cs", 0, [N("A")], [new GraphEdge(N("A"), N("B"), "CALLS")])], baseline);
 
         var restored = new GraphStore();
         restored.Deserialize(candidate.Serialize());
 
-        Assert.IsTrue(restored.HasProvenance);
+        Assert.IsTrue(restored.Baseline!.HasWorkspaceFailures);
         Assert.AreEqual(candidate.Revision, restored.Revision);
         Assert.AreEqual("abc", restored.Baseline!.Inputs.Single().Checksum);
         Assert.AreEqual(1, restored.Documents.Count);
@@ -1321,7 +939,7 @@ public class GraphStoreTests
     {
         var store = BuildSampleGraph();
 
-        var candidate = store.Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline, fromEmpty: true);
+        var candidate = new GraphStore().Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline);
 
         Assert.IsTrue(store.TryGetNode("A", out _));
         Assert.IsFalse(store.TryGetNode("X", out _));
@@ -1335,13 +953,13 @@ public class GraphStoreTests
     {
         var store = new GraphStore();
         var shared = new GraphEdge(N("Caller"), N("Target"), "CALLS");
-        store.Publish(store.Stage([], [
+        store.Publish(new GraphStore().Stage([], [
             Doc("/caller.cs", 0, [N("Caller")], [shared, new GraphEdge(N("Caller"), N("Only"), "REFERENCES")]),
             Doc("/target.cs", 1, [N("Target")], []),
             Doc("/other.cs", 2, [N("Other")], [shared]),
-        ], EmptyBaseline, fromEmpty: true));
+        ], EmptyBaseline));
 
-        var updated = store.Stage([("P", "/caller.cs")], [], EmptyBaseline, fromEmpty: false);
+        var updated = store.Stage([("P", "/caller.cs")], [], EmptyBaseline);
 
         Assert.IsFalse(updated.TryGetNode("Only", out _), "A node owned only by the removed document disappears.");
         Assert.IsTrue(updated.TryGetNode("Caller", out _), "A node still referenced by a surviving contribution stays.");
@@ -1357,9 +975,9 @@ public class GraphStoreTests
             [new GraphEdge(N("T", file: "/T.Part1.cs"), N("T.A", "Method", "/T.Part1.cs"), "CONTAINS")]);
         var part2 = Doc("/T.Part2.cs", 1, [N("T", file: "/T.Part2.cs"), N("T.B", "Method", "/T.Part2.cs")],
             [new GraphEdge(N("T", file: "/T.Part2.cs"), N("T.B", "Method", "/T.Part2.cs"), "CONTAINS")]);
-        store.Publish(store.Stage([], [part1, part2], EmptyBaseline, fromEmpty: true));
+        store.Publish(new GraphStore().Stage([], [part1, part2], EmptyBaseline));
 
-        var updated = store.Stage([part1.Key], [], EmptyBaseline, fromEmpty: false);
+        var updated = store.Stage([part1.Key], [], EmptyBaseline);
 
         Assert.IsTrue(updated.TryGetNode("T", out var t));
         Assert.AreEqual("/T.Part2.cs", t!.File);
@@ -1375,12 +993,12 @@ public class GraphStoreTests
             [new GraphEdge(N("Caller", file: "/First.cs"), N("Target", "Class", "/First.cs"), "REFERENCES")]);
         var second = Doc("/Second.cs", 1, [N("Shared", "Interface", "/Second.cs")],
             [new GraphEdge(N("Caller", file: "/Second.cs"), N("Target", "Interface", "/Second.cs"), "REFERENCES")]);
-        var original = new GraphStore().Stage([], [first, second], EmptyBaseline, fromEmpty: true);
+        var original = new GraphStore().Stage([], [first, second], EmptyBaseline);
         var restored = new GraphStore();
         restored.Deserialize(original.Serialize());
 
-        var updated = restored.Stage([first.Key], [], EmptyBaseline, fromEmpty: false);
-        var fresh = new GraphStore().Stage([], [second], EmptyBaseline, fromEmpty: true);
+        var updated = restored.Stage([first.Key], [], EmptyBaseline);
+        var fresh = new GraphStore().Stage([], [second], EmptyBaseline);
 
         Assert.AreEqual(GraphOnly(fresh), GraphOnly(updated));
         Assert.IsTrue(updated.TryGetNode("Shared", out var declaration));
@@ -1392,32 +1010,16 @@ public class GraphStoreTests
     }
 
     [TestMethod]
-    public void Deserialize_IdOnlyContributions_RemainQueryableWithoutTrustedProvenance()
-    {
-        const string json = """
-            {"revision":"old","nodes":[{"id":"Shared","kind":"Class","file":"/First.cs"}],"edges":[],
-             "documents":[{"project":"P","path":"/Second.cs","checksum":"abc","projectOrder":0,"documentOrder":0,
-                           "nodes":["Shared"],"edges":[]}]}
-            """;
-        var restored = new GraphStore();
-
-        restored.Deserialize(json);
-
-        Assert.IsTrue(restored.TryGetNode("Shared", out _));
-        Assert.IsFalse(restored.HasProvenance);
-    }
-
-    [TestMethod]
     public void Stage_ReplacingEarlyDocument_KeepsFreshScanEncounterOrder()
     {
         var first = Doc("/1.cs", 0, [N("A")], [new GraphEdge(N("A"), N("Hub"), "CALLS")]);
         var second = Doc("/2.cs", 1, [N("B")], [new GraphEdge(N("B"), N("Hub"), "CALLS")]);
         var replacement = Doc("/1.cs", 0, [N("A2")], [new GraphEdge(N("A2"), N("Hub"), "CALLS"), new GraphEdge(N("A2"), N("B"), "CALLS")]);
         var store = new GraphStore();
-        store.Publish(store.Stage([], [first, second], EmptyBaseline, fromEmpty: true));
+        store.Publish(new GraphStore().Stage([], [first, second], EmptyBaseline));
 
-        var incremental = store.Stage([], [replacement], EmptyBaseline, fromEmpty: false);
-        var fresh = new GraphStore().Stage([], [replacement, second], EmptyBaseline, fromEmpty: true);
+        var incremental = store.Stage([], [replacement], EmptyBaseline);
+        var fresh = new GraphStore().Stage([], [replacement, second], EmptyBaseline);
 
         Assert.AreEqual(GraphOnly(fresh), GraphOnly(incremental));
         CollectionAssert.AreEqual(
@@ -1434,10 +1036,10 @@ public class GraphStoreTests
         var inserted = Doc("/Inserted.cs", 1, [N("Inserted")], [new GraphEdge(N("Inserted"), N("A"), "CALLS")]);
         var shifted = b with { DocumentOrder = 2 };
         var store = new GraphStore();
-        store.Publish(store.Stage([], [a, b], EmptyBaseline, fromEmpty: true));
+        store.Publish(new GraphStore().Stage([], [a, b], EmptyBaseline));
 
-        var incremental = store.Stage([], [inserted, shifted], EmptyBaseline, fromEmpty: false);
-        var fresh = new GraphStore().Stage([], [a, inserted, shifted], EmptyBaseline, fromEmpty: true);
+        var incremental = store.Stage([], [inserted, shifted], EmptyBaseline);
+        var fresh = new GraphStore().Stage([], [a, inserted, shifted], EmptyBaseline);
 
         Assert.AreEqual(GraphOnly(fresh), GraphOnly(incremental));
         Assert.AreEqual(fresh.NodeCount, incremental.NodeCount);
@@ -1453,27 +1055,9 @@ public class GraphStoreTests
         var store = BuildSampleGraph();
         var captured = store.Capture();
 
-        store.Publish(store.Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline, fromEmpty: true));
+        store.Publish(new GraphStore().Stage([], [Doc("/x.cs", 0, [N("X")], [])], EmptyBaseline));
 
         Assert.IsTrue(captured.TryGetNode("A", out _));
         Assert.IsFalse(captured.TryGetNode("X", out _));
-    }
-
-    [TestMethod]
-    public void TryGetShortNameMatches_MatchesShortQualifiedAndGenericNamesOfTypesOnly()
-    {
-        var store = new GraphStore();
-        store.AddNode(N("App.Orders.IRepository<T>", "Interface"));
-        store.AddNode(N("App.Orders.OrderService"));
-        store.AddNode(N("App.Billing.OrderService"));
-        store.AddNode(N("App.Orders.OrderService.Run()", "Method"));
-
-        CollectionAssert.AreEqual(new[] { "App.Orders.IRepository<T>" },
-            store.TryGetShortNameMatches("IRepository<Order>").Select(n => n.Id).ToList());
-        CollectionAssert.AreEqual(new[] { "App.Orders.OrderService", "App.Billing.OrderService" },
-            store.TryGetShortNameMatches("OrderService").Select(n => n.Id).ToList());
-        CollectionAssert.AreEqual(new[] { "App.Billing.OrderService" },
-            store.TryGetShortNameMatches("Billing.OrderService").Select(n => n.Id).ToList());
-        Assert.AreEqual(0, store.TryGetShortNameMatches("Service").Count);
     }
 }

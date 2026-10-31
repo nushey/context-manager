@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using ContextManager.Analysis.Graph;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -23,19 +22,27 @@ public class GraphSynchronizerTests : FixtureTest
     private static void Edit(string directory, string relative, string from, string to) =>
         FixtureCopy.Edit(Src(directory, relative), from, to);
 
-    private static string[] Relative(GraphSyncResult result, string directory) =>
+    private sealed record SyncOutcome(GraphStore Graph, bool Changed, IReadOnlyList<string> ExtractedDocuments);
+
+    private static string[] Relative(SyncOutcome result, string directory) =>
         result.ExtractedDocuments.Select(p => Path.GetRelativePath(directory, p).Replace('\\', '/')).Order().ToArray();
 
-    private async Task<GraphSyncResult> SyncAsync(
+    private async Task<SyncOutcome> SyncAsync(
         GraphSynchronizer synchronizer,
         string directory,
         bool reevaluate = false,
         string solution = IncrementalSolution)
     {
+        var before = RegistryOf(synchronizer).TryLoad(Sln(directory, solution))?.Capture() ?? new GraphStore();
         var result = await synchronizer.SynchronizeAsync(Sln(directory, solution), reevaluate);
         Assert.IsNotNull(result);
         StringAssert.Matches(result.Report.Status, new System.Text.RegularExpressions.Regex("^(complete|partial)$"));
-        return result;
+
+        var extracted = result.Graph.Documents.Values
+            .Where(d => !before.Documents.TryGetValue(d.Key, out var previous) || !ReferenceEquals(previous.Nodes, d.Nodes))
+            .Select(d => d.Path)
+            .ToList();
+        return new SyncOutcome(result.Graph, result.Graph.Revision != before.Revision, extracted);
     }
 
     private async Task AssertMatchesFreshScanAsync(GraphStore incremental, string directory, string solution = IncrementalSolution)
@@ -51,20 +58,18 @@ public class GraphSynchronizerTests : FixtureTest
     {
         var builder = new StringBuilder($"C {store.NodeCount} {store.EdgeCount}\n");
         using var json = JsonDocument.Parse(store.Serialize());
-        var ids = new List<string>();
-        foreach (var node in json.RootElement.GetProperty("nodes").EnumerateArray())
-        {
-            ids.Add(node.GetProperty("id").GetString()!);
-            builder.AppendLine($"N {node.GetRawText()}");
-        }
-
-        foreach (var edge in json.RootElement.GetProperty("edges").EnumerateArray())
-            builder.AppendLine($"E {edge.GetRawText()}");
+        builder.AppendLine(json.RootElement.GetProperty("documents").GetRawText());
+        var ids = store.Documents.Values
+            .OrderBy(d => d.ProjectOrder)
+            .ThenBy(d => d.DocumentOrder)
+            .SelectMany(d => d.Nodes.Select(n => n.Id).Concat(d.Edges.SelectMany(e => new[] { e.Source.Id, e.Target.Id })))
+            .Distinct()
+            .ToList();
 
         foreach (var id in ids)
         {
             builder.AppendLine($"D {id} {JsonSerializer.Serialize(store.GetAggregatedNeighbors(id), AnalysisJson.Options)}");
-            builder.AppendLine($"I {id} {string.Join(",", store.ImpactBackward(id, ImpactEdgeTypes, out var bridged))} | {string.Join(",", bridged)}");
+            builder.AppendLine($"I {id} {string.Join(",", store.ImpactBackward(id, ImpactEdgeTypes))}");
             foreach (var target in ids)
                 builder.AppendLine($"S {id} {target} {string.Join(",", store.ShortestPath(id, target))}");
         }
@@ -87,7 +92,6 @@ public class GraphSynchronizerTests : FixtureTest
             Relative(result, directory));
         var persisted = new GraphStore();
         persisted.Deserialize(File.ReadAllText(GraphRegistry.GetGraphPath(Sln(directory))));
-        Assert.IsTrue(persisted.HasProvenance);
         Assert.AreEqual(result.Graph.Revision, persisted.Revision);
         Assert.IsTrue(result.Graph.TryGetNode("IncrementalFixtures.Core.Sender", out var sender));
         Assert.AreEqual(Src(directory, "Core/Sender.cs"), sender!.File);
@@ -109,7 +113,6 @@ public class GraphSynchronizerTests : FixtureTest
 
         Assert.IsFalse(result.Changed);
         Assert.AreEqual(0, result.ExtractedDocuments.Count);
-        Assert.AreEqual(TimeSpan.Zero, result.Timings.Evaluation);
         Assert.AreEqual(before, (File.GetLastWriteTimeUtc(graphPath), File.ReadAllText(graphPath)));
     }
 
@@ -126,7 +129,6 @@ public class GraphSynchronizerTests : FixtureTest
         var result = await SyncAsync(synchronizer, directory);
 
         CollectionAssert.AreEqual(new[] { "Core/Sender.cs" }, Relative(result, directory));
-        Assert.AreEqual(TimeSpan.Zero, result.Timings.Evaluation);
         Assert.IsFalse(result.Graph.GetAggregatedNeighbors("IncrementalFixtures.Core.Sender").Any(n => n.Id == "IncrementalFixtures.Core.Audit"));
         await AssertMatchesFreshScanAsync(result.Graph, directory);
     }
@@ -610,92 +612,8 @@ public class GraphSynchronizerTests : FixtureTest
 
         var results = await Task.WhenAll(SyncAsync(synchronizer, directory), SyncAsync(synchronizer, directory));
 
-        Assert.AreEqual(1, results.Count(r => r.Changed), "The second writer must observe the first writer's commit.");
+        Assert.AreEqual(results[0].Graph.Revision, results[1].Graph.Revision, "The second writer must observe the first writer's commit.");
         await AssertMatchesFreshScanAsync(results.Last().Graph, directory);
-    }
-
-    [TestMethod]
-    [Timeout(180_000)]
-    public async Task PersistenceFailure_KeepsPreviousGraphAndRetriesOnNextSync()
-    {
-        var directory = CopyFixture();
-        var registry = new GraphRegistry();
-        var fail = false;
-        var synchronizer = CreateSynchronizer(registry, (path, json, ct) =>
-            fail ? throw new IOException("controlled write failure") : GraphRegistry.WriteAtomicallyAsync(path, json, ct));
-        var initial = await SyncAsync(synchronizer, directory);
-        Edit(directory, "Core/Sender.cs", "        Audit.Record();\n", "");
-
-        fail = true;
-        var failure = await Assert.ThrowsAsync<GraphSyncException>(() => synchronizer.SynchronizeAsync(Sln(directory), reevaluate: false));
-        Assert.AreEqual("persistence", failure.Phase);
-        Assert.AreEqual(initial.Graph.Revision, registry.TryLoad(Sln(directory))!.Revision);
-
-        fail = false;
-        var result = await SyncAsync(synchronizer, directory);
-        CollectionAssert.AreEqual(new[] { "Core/Sender.cs" }, Relative(result, directory));
-        await AssertMatchesFreshScanAsync(result.Graph, directory);
-    }
-
-    [TestMethod]
-    [Timeout(180_000)]
-    public async Task SaveAsync_StaleExpectedVersion_RefusesToOverwriteNewerGraph()
-    {
-        var directory = CopyFixture();
-        var registry = new GraphRegistry();
-        await SyncAsync(CreateSynchronizer(registry), directory);
-        var graphPath = GraphRegistry.GetGraphPath(Sln(directory));
-        var stale = GraphRegistry.ReadVersion(graphPath);
-        Edit(directory, "Core/Sender.cs", "        Audit.Record();\n", "");
-        await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
-        var newer = File.ReadAllText(graphPath);
-
-        var saved = await registry.SaveAsync(Sln(directory), new GraphStore(), stale, GraphRegistry.WriteAtomicallyAsync, CancellationToken.None);
-
-        Assert.IsFalse(saved);
-        Assert.AreEqual(newer, File.ReadAllText(graphPath));
-    }
-
-    [TestMethod]
-    [Timeout(180_000)]
-    public async Task LegacyGraphJson_FirstSyncEstablishesProvenanceWithFullScan()
-    {
-        var directory = CopyFixture();
-        var graphPath = GraphRegistry.GetGraphPath(Sln(directory));
-        Directory.CreateDirectory(Path.GetDirectoryName(graphPath)!);
-        File.WriteAllText(graphPath, """{"nodes":[{"id":"Legacy","kind":"Class"}],"edges":[]}""");
-
-        var result = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
-
-        Assert.AreEqual(6, result.ExtractedDocuments.Count);
-        Assert.IsTrue(result.Graph.HasProvenance);
-        Assert.IsFalse(result.Graph.TryGetNode("Legacy", out _));
-        await AssertMatchesFreshScanAsync(result.Graph, directory);
-    }
-
-    [TestMethod]
-    [Timeout(180_000)]
-    public async Task IdOnlyGraphJson_FirstSyncReestablishesCompleteProvenance()
-    {
-        var directory = CopyFixture();
-        var initial = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
-        var payload = JsonNode.Parse(initial.Graph.Serialize())!;
-        foreach (var document in payload["documents"]!.AsArray())
-        {
-            document!.AsObject().Remove("nodeContributions");
-            document.AsObject().Remove("edgeContributions");
-        }
-
-        File.WriteAllText(GraphRegistry.GetGraphPath(Sln(directory)), payload.ToJsonString());
-
-        var result = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
-
-        Assert.AreEqual(6, result.ExtractedDocuments.Count);
-        Assert.IsTrue(result.Graph.HasProvenance);
-        await AssertMatchesFreshScanAsync(result.Graph, directory);
-        var unchanged = await SyncAsync(CreateSynchronizer(new GraphRegistry()), directory);
-        Assert.IsFalse(unchanged.Changed);
-        Assert.AreEqual(0, unchanged.ExtractedDocuments.Count);
     }
 
     [TestMethod]

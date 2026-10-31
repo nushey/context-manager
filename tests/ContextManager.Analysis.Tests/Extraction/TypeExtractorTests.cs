@@ -16,8 +16,6 @@ public class TypeExtractorTests
         return walker.Types;
     }
 
-    // ── Single top-level class ────────────────────────────────────────────────
-
     [TestMethod]
     public void SingleTopLevelClass_YieldsOneTypeInfo()
     {
@@ -26,8 +24,6 @@ public class TypeExtractorTests
         Assert.AreEqual(1, types.Count);
         Assert.AreEqual("Foo", types[0].Name);
     }
-
-    // ── Nested public class ───────────────────────────────────────────────────
 
     [TestMethod]
     public void NestedPublicClass_YieldsTwoEntries_OuterFirst()
@@ -48,8 +44,6 @@ public class TypeExtractorTests
         Assert.AreEqual("Inner", types[1].Name);
     }
 
-    // ── Private type excluded ─────────────────────────────────────────────────
-
     [TestMethod]
     public void PrivateNestedClass_IsExcluded()
     {
@@ -68,13 +62,9 @@ public class TypeExtractorTests
         Assert.AreEqual("Outer", types[0].Name);
     }
 
-    // ── All six declaration kinds ─────────────────────────────────────────────
-
     [TestMethod]
     public void AllSixKinds_AreCollected()
     {
-        // Class has parameterized constructor to prevent DTO branch (b) from firing.
-        // Struct has parameterized constructor for the same reason.
         var source = """
             public class MyClass {
                 private readonly int _x;
@@ -103,8 +93,6 @@ public class TypeExtractorTests
         Assert.IsTrue(types.Any(t => t.Kind == "delegate" && t.Name == "MyDelegate"), "MyDelegate expected as delegate");
     }
 
-    // ── Source order preserved ────────────────────────────────────────────────
-
     [TestMethod]
     public void SourceDeclarationOrder_IsPreserved()
     {
@@ -121,8 +109,6 @@ public class TypeExtractorTests
         Assert.AreEqual("Beta", types[1].Name);
         Assert.AreEqual("Gamma", types[2].Name);
     }
-
-    // ── Flat list (nested types not nested in output) ─────────────────────────
 
     [TestMethod]
     public void DeeplyNested_AreFlattenedIntoTopLevelList()

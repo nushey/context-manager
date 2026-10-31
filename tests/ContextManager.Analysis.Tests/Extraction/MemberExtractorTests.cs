@@ -53,7 +53,6 @@ public class MemberExtractorTests
         var tree = CSharpSyntaxTree.ParseText(text);
         var root = tree.GetCompilationUnitRoot();
 
-        // Handle file-scoped namespaces: dig one level deeper
         if (root.Members[0] is FileScopedNamespaceDeclarationSyntax fileNs)
             return (TypeDeclarationSyntax)fileNs.Members[0];
 
@@ -62,8 +61,6 @@ public class MemberExtractorTests
 
         return (TypeDeclarationSyntax)root.Members[0];
     }
-
-    // ── Class with DI constructor ─────────────────────────────────────────────
 
     [TestMethod]
     public void Class_DiConstructor_PopulatesConstructorDependencies()
@@ -140,8 +137,6 @@ public class MemberExtractorTests
         Assert.AreEqual("eventBus", result.ConstructorDependencies[1].Name);
     }
 
-    // ── Public const and static readonly fields ───────────────────────────────
-
     [TestMethod]
     public void Class_PublicConst_LandsInProperties()
     {
@@ -194,8 +189,6 @@ public class MemberExtractorTests
 
         Assert.IsFalse(result.Properties?.Any(p => p.Name == "_counter") == true);
     }
-
-    // ── Interface ─────────────────────────────────────────────────────────────
 
     [TestMethod]
     public void Interface_KindIsInterface()
@@ -298,8 +291,6 @@ public class MemberExtractorTests
         Assert.IsTrue(result.Implements.Contains("IDisposable"));
     }
 
-    // ── Struct ────────────────────────────────────────────────────────────────
-
     [TestMethod]
     public void Struct_KindIsStruct()
     {
@@ -336,8 +327,6 @@ public class MemberExtractorTests
         Assert.AreEqual("amount", result.ConstructorDependencies[0].Name);
     }
 
-    // ── Record ────────────────────────────────────────────────────────────────
-
     [TestMethod]
     public void Record_KindIsRecord()
     {
@@ -354,7 +343,7 @@ public class MemberExtractorTests
     }
 
     [TestMethod]
-    public void Record_PrimaryConstructorPopulatesConstructorDependencies()
+    public void Record_PositionalParametersArePropertiesNotConstructorDependencies()
     {
         var snippet = """
             record CreateOrderRecord(string CustomerId, decimal Total)
@@ -365,14 +354,12 @@ public class MemberExtractorTests
         var node = ParseFirstType(snippet);
         var result = MemberExtractor.Build(node, isTopLevel: true);
 
-        Assert.AreEqual(2, result.ConstructorDependencies.Count);
-        Assert.AreEqual("string", result.ConstructorDependencies[0].Type);
-        Assert.AreEqual("CustomerId", result.ConstructorDependencies[0].Name);
-        Assert.AreEqual("decimal", result.ConstructorDependencies[1].Type);
-        Assert.AreEqual("Total", result.ConstructorDependencies[1].Name);
+        Assert.IsNull(result.ConstructorDependencies);
+        Assert.IsNotNull(result.Properties);
+        CollectionAssert.AreEqual(
+            new[] { "CustomerId:string", "Total:decimal" },
+            result.Properties.Select(p => $"{p.Name}:{p.Type}").ToArray());
     }
-
-    // ── Static / abstract classes ─────────────────────────────────────────────
 
     [TestMethod]
     public void StaticClass_KindIsStaticClass()
@@ -405,52 +392,6 @@ public class MemberExtractorTests
 
         Assert.AreEqual("abstract-class", result.Kind);
     }
-
-    // ── DTO ───────────────────────────────────────────────────────────────────
-
-    [TestMethod]
-    public void Dto_AutoPropertiesFixture_KindStaysDto()
-    {
-        // Regression: real DTOs must keep classifying as dto after the static/zero-property fixes.
-        var node = ParseFromFixture(@"Fixtures/DtoByAutoProperties.cs");
-        var result = MemberExtractor.Build(node, isTopLevel: true);
-
-        Assert.AreEqual("dto", result.Kind);
-    }
-
-    [TestMethod]
-    public void Dto_SuffixMatch_KindIsDto()
-    {
-        var snippet = """
-            class CreateOrderRequest {
-                private int _x;
-                public void DoSomething() {}
-                public int X { get { return _x; } }
-            }
-            """;
-        var node = ParseFirstType(snippet);
-        var result = MemberExtractor.Build(node, isTopLevel: true);
-
-        Assert.AreEqual("dto", result.Kind);
-    }
-
-    [TestMethod]
-    public void Dto_SuffixMatch_PropertiesEmpty()
-    {
-        var snippet = """
-            class CreateOrderRequest {
-                private int _x;
-                public void DoSomething() {}
-                public int X { get { return _x; } }
-            }
-            """;
-        var node = ParseFirstType(snippet);
-        var result = MemberExtractor.Build(node, isTopLevel: true);
-
-        Assert.IsNull(result.Properties);
-    }
-
-    // ── Declaration order ─────────────────────────────────────────────────────
 
     [TestMethod]
     public void Class_DeclarationOrderPreservedInMethods()
@@ -491,8 +432,6 @@ public class MemberExtractorTests
         Assert.AreEqual("Beta", result.Properties[1].Name);
     }
 
-    // ── Base / Implements ─────────────────────────────────────────────────────
-
     [TestMethod]
     public void Class_FirstNonInterfaceEntryIsBase()
     {
@@ -524,8 +463,6 @@ public class MemberExtractorTests
         Assert.AreEqual(2, result.Implements.Count);
     }
 
-    // ── Members null for non-enums ─────────────────────────────────────────────
-
     [TestMethod]
     public void Class_MembersIsNull()
     {
@@ -539,8 +476,6 @@ public class MemberExtractorTests
 
         Assert.IsNull(result.Members);
     }
-
-    // ── Enum ──────────────────────────────────────────────────────────────────
 
     [TestMethod]
     public void Enum_KindIsEnum()
@@ -601,8 +536,6 @@ public class MemberExtractorTests
 
         Assert.IsNull(result.ConstructorDependencies);
     }
-
-    // ── Delegate ──────────────────────────────────────────────────────────────
 
     [TestMethod]
     public void Delegate_KindIsDelegate()

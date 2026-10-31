@@ -9,11 +9,6 @@ namespace ContextManager.Analysis.Tests.Graph;
 [TestClass]
 public class NodeClassifierTests
 {
-    // Builds an INamedTypeSymbol from an inline source string. Covers class/struct/interface/
-    // record declarations (BaseTypeDeclarationSyntax), enums (BaseTypeDeclarationSyntax), and
-    // delegates (DelegateDeclarationSyntax) so every TypeKind path can be exercised. Mirrors the
-    // bare-compilation approach of EdgeExtractorTests.ParseWithCompilation — no references needed
-    // since classification only reads TypeKind/IsRecord.
     private static INamedTypeSymbol GetSymbol(string source, string typeName)
     {
         var tree = CSharpSyntaxTree.ParseText(source);
@@ -80,8 +75,6 @@ public class NodeClassifierTests
         Assert.IsNull(NodeClassifier.ClassifyTypeKind(sym));
     }
 
-    // Resolves an IMethodSymbol from an inline source string — same bare-compilation approach as
-    // GetSymbol, for exercising the member branches of NodeFor.
     private static IMethodSymbol GetMethodSymbol(string source, string methodName)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

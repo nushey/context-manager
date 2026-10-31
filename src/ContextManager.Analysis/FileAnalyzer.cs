@@ -26,32 +26,14 @@ public class FileAnalyzer
             return new FileAnalysisResult(null, new AnalysisError("read_failed", ex.Message, filePath));
         }
 
-        var tree = CSharpSyntaxTree.ParseText(text, cancellationToken: ct);
-
-        // Best-effort: extract from whatever tree Roslyn returns even when it has diagnostics,
-        // surfacing the error messages via ParseErrors. Only the catastrophic case — the syntax
-        // root itself being unobtainable — falls back to a parse_failed error.
-        CompilationUnitSyntax root;
-        try
-        {
-            root = (CompilationUnitSyntax)tree.GetRoot(ct);
-        }
-        catch (Exception)
-        {
-            return new FileAnalysisResult(null, new AnalysisError("parse_failed", "Unable to obtain syntax tree root.", filePath));
-        }
-
+        var fullPath = Path.GetFullPath(filePath);
+        var tree = CSharpSyntaxTree.ParseText(text, path: fullPath, cancellationToken: ct);
+        var root = (CompilationUnitSyntax)tree.GetRoot(ct);
         var usings = root.Usings
             .Select(u => u.Name!.ToString())
             .ToList();
 
-        string? ns = null;
-        if (root.Members.OfType<FileScopedNamespaceDeclarationSyntax>().FirstOrDefault() is { } fileScoped)
-            ns = fileScoped.Name.ToString();
-        else if (root.Members.OfType<NamespaceDeclarationSyntax>().FirstOrDefault() is { } blockNs)
-            ns = blockNs.Name.ToString();
-
-        var extractor = new TypeExtractor();
+        var extractor = new TypeExtractor(FrameworkCompilation.Create([tree], ct).GetSemanticModel(tree));
         extractor.Visit(root);
 
         var parseErrors = tree.GetDiagnostics(ct)
@@ -60,8 +42,8 @@ public class FileAnalyzer
             .ToList();
 
         var analysis = new FileAnalysis(
-            File: Path.GetFileName(filePath),
-            Namespace: ns,
+            File: fullPath,
+            Namespace: TypeExtractor.NamespaceOf(root),
             Usings: usings,
             Types: extractor.Types,
             ParseErrors: parseErrors.Count > 0 ? parseErrors : null);

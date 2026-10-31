@@ -2,32 +2,12 @@ using ContextManager.Analysis.Extraction;
 using ContextManager.Analysis.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace ContextManager.Analysis;
 
 public class ContextAnalyzer
 {
-    private const string ImplicitGlobalUsings = """
-        global using System;
-        global using System.Collections.Generic;
-        global using System.IO;
-        global using System.Linq;
-        global using System.Net.Http;
-        global using System.Threading;
-        global using System.Threading.Tasks;
-        """;
-
-    // BCL metadata references built once per process from the runtime's trusted platform
-    // assemblies. Without them the compilation resolves nothing — every predefined/BCL type
-    // becomes an error symbol and pollutes the unresolved list.
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> BclReferences = new(() =>
-        AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string tpa
-            ? tpa.Split(Path.PathSeparator)
-                 .Where(File.Exists)
-                 .Select(p => (MetadataReference)MetadataReference.CreateFromFile(p))
-                 .ToList()
-            : (IReadOnlyList<MetadataReference>)[]);
-
     private readonly CrossReferenceResolver _resolver;
 
     public ContextAnalyzer(CrossReferenceResolver resolver)
@@ -39,44 +19,22 @@ public class ContextAnalyzer
         IReadOnlyList<string> filePaths,
         CancellationToken ct = default)
     {
-        var sources = new Dictionary<string, string>(filePaths.Count, StringComparer.OrdinalIgnoreCase);
-        foreach (var path in filePaths)
+        var paths = filePaths.Select(Path.GetFullPath).ToList();
+        var treeByPath = new Dictionary<string, SyntaxTree>(paths.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
         {
-            sources[path] = await File.ReadAllTextAsync(path, ct);
+            if (!treeByPath.ContainsKey(path))
+                treeByPath[path] = CSharpSyntaxTree.ParseText(await File.ReadAllTextAsync(path, ct), path: path, cancellationToken: ct);
         }
 
-        var treeByPath = new Dictionary<string, Microsoft.CodeAnalysis.SyntaxTree>(
-            filePaths.Count, StringComparer.OrdinalIgnoreCase);
+        var compilation = FrameworkCompilation.Create(treeByPath.Values, ct);
+        var files = new List<ContextFileAnalysis>(paths.Count);
 
-        foreach (var (path, source) in sources)
-        {
-            treeByPath[path] = CSharpSyntaxTree.ParseText(source, path: path, cancellationToken: ct);
-        }
-
-        var implicitUsingsTree = CSharpSyntaxTree.ParseText(
-            ImplicitGlobalUsings,
-            path: "__ContextManagerImplicitGlobalUsings.g.cs",
-            cancellationToken: ct);
-
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "ContextAnalysis",
-            syntaxTrees: treeByPath.Values.Append(implicitUsingsTree),
-            references: BclReferences.Value);
-
-        var files = new List<ContextFileAnalysis>(filePaths.Count);
-
-        foreach (var path in filePaths)
+        foreach (var path in paths)
         {
             var tree = treeByPath[path];
-            var root = (Microsoft.CodeAnalysis.CSharp.Syntax.CompilationUnitSyntax)tree.GetRoot(ct);
-
-            string? ns = null;
-            if (root.Members.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.FileScopedNamespaceDeclarationSyntax>().FirstOrDefault() is { } fileScoped)
-                ns = fileScoped.Name.ToString();
-            else if (root.Members.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.NamespaceDeclarationSyntax>().FirstOrDefault() is { } blockNs)
-                ns = blockNs.Name.ToString();
-
-            var extractor = new TypeExtractor();
+            var root = (CompilationUnitSyntax)tree.GetRoot(ct);
+            var extractor = new TypeExtractor(compilation.GetSemanticModel(tree));
             extractor.Visit(root);
 
             var contextTypes = extractor.Types
@@ -84,19 +42,15 @@ public class ContextAnalyzer
                     Name: t.Name,
                     Kind: t.Kind,
                     Base: t.Base,
-                    Implements: t.Implements is { Count: > 0 } impl ? impl : null,
-                    Attributes: t.Attributes is { Count: > 0 } attrs ? attrs : null,
-                    ConstructorDependencies: t.ConstructorDependencies is { Count: > 0 } deps
-                        ? deps.Select(d => d.Type).ToList()
-                        : null,
-                    Methods: t.Methods is { Count: > 0 } methods
-                        ? methods.Select(MethodSignatureFormatter.Format).ToList()
-                        : null))
+                    Implements: t.Implements,
+                    Attributes: t.Attributes,
+                    ConstructorDependencies: t.ConstructorDependencies?.Select(d => d.Type).ToList(),
+                    Methods: t.Methods?.Select(MethodSignatureFormatter.Format).ToList()))
                 .ToList();
 
             files.Add(new ContextFileAnalysis(
                 File: path,
-                Namespace: ns,
+                Namespace: TypeExtractor.NamespaceOf(root),
                 Types: contextTypes));
         }
 

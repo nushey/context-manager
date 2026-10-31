@@ -72,8 +72,6 @@ public class AccessLevelTests
     [DataRow(false, "private")]
     public void FromModifiers_NoModifiers_DefaultsByContext(bool isTopLevelType, string expected)
     {
-        // Parse a snippet where the type has no explicit access modifier.
-        // For top-level: a class with no modifier. For nested: same inside an outer class.
         string snippet = isTopLevelType
             ? "class Foo {}"
             : "class Outer { class Inner {} }";

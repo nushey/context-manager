@@ -10,5 +10,4 @@ public sealed record GraphBuildResult(
     int LoadedDocuments,
     int SkippedDocuments,
     int NodeCount,
-    int EdgeCount,
-    IReadOnlyList<GraphBuildDiagnostic> Diagnostics);
+    int EdgeCount);

@@ -2,11 +2,6 @@ using Microsoft.CodeAnalysis;
 
 namespace ContextManager.Analysis.Graph;
 
-// Single source of truth for graph node identity (Id string + Kind label). ClassifyTypeKind
-// orders IsRecord before Struct/Class: a `record struct` has TypeKind.Struct AND IsRecord, so
-// IsRecord must be checked first — otherwise it is mislabeled "Class". NodeFor is shared by
-// GraphBuilder (node harvest) and EdgeExtractor (edge endpoints) so both paths agree on the
-// Id (ToDisplayString) and Kind for every symbol category.
 internal static class NodeClassifier
 {
     public static string? ClassifyTypeKind(INamedTypeSymbol symbol) => symbol switch
@@ -17,8 +12,6 @@ internal static class NodeClassifier
         { TypeKind: TypeKind.Struct } => "Class",
         _ => null
     };
-
-    public static bool IsTypeKind(string kind) => kind is "Interface" or "Record" or "Class";
 
     public static GraphNode? NodeFor(ISymbol symbol, string? fallbackFilePath = null)
     {
@@ -36,7 +29,9 @@ internal static class NodeClassifier
 
     private static string? DeclaringFile(ISymbol symbol, string? fallbackFilePath)
     {
-        var path = symbol.DeclaringSyntaxReferences.FirstOrDefault()?.SyntaxTree.FilePath;
+        var reference = symbol.DeclaringSyntaxReferences.FirstOrDefault()
+            ?? symbol.ContainingType?.DeclaringSyntaxReferences.FirstOrDefault();
+        var path = reference?.SyntaxTree.FilePath;
         if (string.IsNullOrEmpty(path))
             path = fallbackFilePath;
 

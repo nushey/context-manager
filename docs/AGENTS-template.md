@@ -11,8 +11,7 @@
 
 - **Always use absolute paths.**
 - **`inspect_context` max 15 files.** Split into smaller batches if needed.
-- **Check `unresolved`** — types listed there are dependencies not in your file set. Add their files and call again; when `unresolvedHints` is present, take the files from its `{ type, id, file }` entries (every matching graph type is listed, so pick the right `id`).
-- **Read `graph` on each `inspect_file` type** when present: `nodeId` is the exact ID for graph tools, `inboundCount`/`outboundCount` size its neighborhood, and `directCallers`/`directDependencies` list up to 5 neighbors with their `file`. It reflects the last persisted graph; `inspect_file` never updates it. When the solution has no graph yet, `graphStatus` is `not_initialized (run project_scan on <sln>)`.
+- **Check `unresolved`** — types listed there are dependencies not in your file set. Add their files and call again.
 - **Do not call these tools for non-`.cs` files** — they will fail.
 - **Do not use these tools as a substitute for reading method bodies.** Use `read_file` with line numbers from the output when you need logic.
 
@@ -22,7 +21,7 @@ Use graph tools to navigate before you read. The starting point is always the fi
 
 | Step | Tool | Purpose |
 |------|------|---------|
-| 1 | `inspect_file(path)` | Read the type → note `graph.nodeId` (or namespace and type name) |
+| 1 | `inspect_file(path)` | Read the type → note namespace and type name |
 | 2 | `graph_get_dependencies(solutionPath, nodeId)` | Discover adjacent files worth reading |
 | 3 | `inspect_file` on the `file` of relevant neighbors | Read only what you actually need |
 | 4 | `graph_impact_analysis(solutionPath, nodeId)` | Assess blast radius before changing anything |
