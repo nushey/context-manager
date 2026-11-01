@@ -12,6 +12,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.nuget.org/packages/ContextManager"><img src="https://img.shields.io/nuget/v/ContextManager.svg" alt="NuGet version"></a>
+</p>
+
+<p align="center">
   <a href="#install">Install</a> &bull;
   <a href="#tools">Tools</a> &bull;
   <a href="#how-to-use-it">How to use it</a> &bull;
