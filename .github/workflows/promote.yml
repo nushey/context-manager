@@ -1,0 +1,44 @@
+name: Promote
+
+on:
+  push:
+    branches: ["release/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      - name: Merge the release branch into main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-ff "origin/${GITHUB_REF_NAME}" -m "chore(release): merge ${GITHUB_REF_NAME} into main"
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - run: dotnet build -c Release --no-restore
+
+      - run: dotnet test -c Release --no-build --logger "console;verbosity=minimal"
+
+      - name: Push main, the tag and dev, delete the release branch
+        run: |
+          tag="${GITHUB_REF_NAME#release/}"
+          git tag -a "$tag" -m "Release ${tag}"
+          git push --atomic origin main "$tag" main:dev ":${GITHUB_REF_NAME}"
+
+      - name: Delete the release branch after a failure
+        if: failure()
+        run: git push origin --delete "$GITHUB_REF_NAME"
