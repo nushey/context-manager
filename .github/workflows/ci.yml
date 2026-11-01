@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ["feature/**", "fix/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - run: dotnet build -c Release --no-restore
+
+      - run: dotnet test -c Release --no-build --logger "console;verbosity=minimal"

@@ -15,6 +15,7 @@ Context Manager is a C# / .NET 10 MCP (Model Context Protocol) server that uses 
 | Module | Purpose |
 |--------|---------|
 | `.claude/` | Claude Code project settings and hook configuration |
+| `.github/workflows/` | `ci.yml` (build and test on `feature/**`/`fix/**` pushes and PRs), `promote.yml` (on `release/**` pushed by `scripts/release.sh`: merge into main, test, then one atomic push of main, tag and dev that deletes the release branch, which is also deleted on failure; the only writer of main) and `release.yml` (on `v*` tags: publish to NuGet.org via Trusted Publishing, then to the MCP Registry) |
 | `.gemini/` | Gemini AI assistant configuration |
 | `docs/` | Agent-facing docs: `AGENTS-template.md` (drop-in rules for projects that consume the MCP server) |
 | `assets/` | Static assets: `logo.svg`, referenced from the README by its `raw.githubusercontent.com` URL so it also renders on NuGet.org |
