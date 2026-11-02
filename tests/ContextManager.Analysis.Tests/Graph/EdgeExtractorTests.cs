@@ -48,6 +48,24 @@ public class EdgeExtractorTests
     private static EdgeExtractor CreateExtractor() => new();
 
     [TestMethod]
+    public void SearchMetadata_PreservesFixtureMethodIdsAndTopLevelEntryPoint()
+    {
+        var (model, root) = ParseWithCompilation([FixturePath("SearchCases.cs")]);
+        var nodes = CreateExtractor().Extract(model, root).Nodes;
+        foreach (var declaration in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            var symbol = model.GetDeclaredSymbol(declaration)!;
+            var node = nodes.Single(n => n.Id == symbol.ToDisplayString());
+            Assert.AreEqual(symbol.Name, node.Name);
+            Assert.AreEqual(symbol.ContainingNamespace.ToDisplayString(), node.Namespace);
+        }
+        var (entryModel, entryRoot) = ParseWithCompilation([FixturePath("TopLevelProgram.cs")]);
+        var entry = CreateExtractor().Extract(entryModel, entryRoot).Nodes.Single(n => n.Id == "Program.<Main>$(string[])");
+        Assert.AreEqual(entryModel.GetDeclaredSymbol(entryRoot)!.Name, entry.Name);
+        Assert.IsNull(entry.Namespace);
+    }
+
+    [TestMethod]
     public void Extract_SimpleServiceImplementsISimpleService_EmitsImplementsEdge()
     {
         var (model, root) = ParseWithCompilation([SimpleServicePath, ISimpleServicePath]);

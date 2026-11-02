@@ -7,7 +7,8 @@ public sealed record GraphDocumentRecord(
     int ProjectOrder,
     int DocumentOrder,
     IReadOnlyList<GraphNode> Nodes,
-    IReadOnlyList<GraphEdge> Edges)
+    IReadOnlyList<GraphEdge> Edges,
+    IReadOnlyList<string>? Namespaces = null)
 {
     public (string ProjectKey, string Path) Key => (ProjectKey, Path);
 }

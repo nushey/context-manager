@@ -75,6 +75,7 @@ For other clients, flags, config-file paths, and troubleshooting, see [INSTALL.m
 | `inspect_file` | The structural contract of one `.cs` file. |
 | `inspect_context` | A compact view of up to 15 `.cs` files plus the references between them; `unresolved` lists the user types missing from the set. |
 | `project_scan` | Builds or refreshes the solution's graph and reports its coverage. |
+| `graph_search` | Files and methods matching possible names, grouped by file with namespaces and method node IDs. |
 | `graph_get_dependencies` | The neighbors of a node, rolled up to their declaring type, with edge counts per kind. |
 | `graph_impact_analysis` | Every type that depends on a node, directly or transitively, with its file. |
 | `graph_path_find` | The shortest dependency path between two nodes. |
@@ -86,7 +87,9 @@ shares it.
 
 ## How to use it
 
-Start from the file the user mentions:
+### Start from a file
+
+When the user mentions a file, start there:
 
 1. `inspect_file(path)`: read the type and build its node ID as `Namespace.TypeName`.
 2. `graph_get_dependencies(solutionPath, nodeId)`: find the neighbors worth reading.
@@ -111,7 +114,48 @@ as they are.
 }
 ```
 
-To make your agent follow this workflow, copy [`docs/AGENTS-template.md`](docs/AGENTS-template.md)
+### Find code by name
+
+When you know roughly what something is called but not which file it is in, and you have no node ID,
+call `graph_search` with several candidate names:
+
+```json
+{"solutionPath":"/abs/path/MyApp.sln","queries":["Login","Authentication","SignIn"]}
+```
+
+**What it searches.** A term matches when it appears anywhere in a file name (without `.cs`) or a
+method name (without its signature). Matching is ordinal and ignores case, and any one term is enough.
+It searches every method already in the graph, private ones included, and finds constructors under
+their type name. It does not search directory paths, parameter types, method bodies, or namespaces.
+
+**Valid terms.** Terms are trimmed and must have at least 3 characters. An empty list, or a single
+term that is too short, rejects the whole query before the graph is synchronized, with code
+`invalid_query` and message
+`Provide at least one query term; each term must be at least 3 characters long after trimming whitespace.`
+
+**Order and limit.** Exact matches come first, then partial ones; within each group, results keep
+the order in which they appear in the graph. A name that matches several terms does not rank higher.
+The search keeps at most **50 matches**, and the limit counts matches, not files: each matching file
+counts once and each matching method ID counts once, even when several terms match it. There is no
+pagination. When `truncated` is `true`, at least one match was left out; use more specific names to
+narrow the search.
+
+```json
+{"results":[{"file":"/abs/path/Auth/Session.cs","namespaces":["MyApp.Auth"],"fileMatched":false,"methods":[{"name":"Login","nodeId":"MyApp.Auth.Session.Login()"}]}],"truncated":false}
+```
+
+**Response.** The response is one line of compact JSON, grouped by file. Every file entry has `file`,
+`namespaces`, `fileMatched`, and `methods`, and empty arrays stay as `[]`. `namespaces` lists every
+namespace in the file. `fileMatched` is `true` when the file's own name is one of the matches kept
+within the limit. A file can also appear only because one of its methods was kept, even if its name
+matched too but fell outside the limit. With no matches, the response is
+`{"results":[],"truncated":false}`.
+
+From there, call `inspect_file` on a returned `file`, or pass a method's `nodeId` unchanged to the
+other graph tools. A graph saved by an older version is re-extracted once to add names and
+namespaces; later queries reuse the updated graph while nothing changes.
+
+To make your agent follow these workflows, copy [`docs/AGENTS-template.md`](docs/AGENTS-template.md)
 into the `AGENTS.md` of your project.
 
 ## FAQ

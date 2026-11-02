@@ -4,6 +4,8 @@ namespace ContextManager.Analysis.Graph;
 
 internal static class NodeClassifier
 {
+    public const string MethodNodeKind = "Method";
+
     public static string? ClassifyTypeKind(INamedTypeSymbol symbol) => symbol switch
     {
         { TypeKind: TypeKind.Interface } => "Interface",
@@ -19,13 +21,18 @@ internal static class NodeClassifier
         var kind = symbol switch
         {
             INamedTypeSymbol named => ClassifyTypeKind(named),
-            IMethodSymbol => "Method",
+            IMethodSymbol => MethodNodeKind,
             IPropertySymbol => "Property",
             _ => null
         };
 
-        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind, DeclaringFile(symbol, fallbackFilePath));
+        return kind is null ? null : new GraphNode(symbol.ToDisplayString(), kind, DeclaringFile(symbol, fallbackFilePath),
+            SearchName(symbol), symbol.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() : null);
     }
+
+    private static string SearchName(ISymbol symbol) => symbol is IMethodSymbol { MethodKind: MethodKind.Constructor or MethodKind.StaticConstructor } constructor
+        ? constructor.ContainingType.Name
+        : symbol.Name;
 
     private static string? DeclaringFile(ISymbol symbol, string? fallbackFilePath)
     {
