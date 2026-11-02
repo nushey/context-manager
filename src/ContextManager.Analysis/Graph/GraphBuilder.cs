@@ -60,7 +60,15 @@ public class GraphBuilder
         var syntaxTree = (await document.GetSyntaxTreeAsync(ct))!;
         var root = (CompilationUnitSyntax)await syntaxTree.GetRootAsync(ct);
         var text = await document.GetTextAsync(ct);
-        var (nodes, edges) = _edgeExtractor.Extract(compilation.GetSemanticModel(syntaxTree), root, ct);
+        var model = compilation.GetSemanticModel(syntaxTree);
+        var (nodes, edges) = _edgeExtractor.Extract(model, root, ct);
+        var namespaces = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>()
+            .Select(n => model.GetDeclaredSymbol(n, ct))
+            .OfType<INamespaceSymbol>()
+            .Where(n => !n.IsGlobalNamespace)
+            .Select(n => n.ToDisplayString())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
         return new GraphDocumentRecord(
             projectKey,
@@ -69,7 +77,8 @@ public class GraphBuilder
             projectOrder,
             documentOrder,
             nodes,
-            edges);
+            edges,
+            namespaces);
     }
 
     internal static bool IsSourceDocument(string? filePath)

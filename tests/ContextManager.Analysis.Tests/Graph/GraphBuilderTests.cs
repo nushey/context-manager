@@ -10,6 +10,25 @@ namespace ContextManager.Analysis.Tests.Graph;
 public class GraphBuilderTests
 {
     [TestMethod]
+    public async Task ExtractProjectAsync_NamespaceOnlyFixture_RoundTripsOrderedDistinctNamespaces()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("Search", LanguageNames.CSharp);
+        var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Fixtures", "GraphFixtures", "SearchNamespaces.cs");
+        project = workspace.AddDocument(DocumentInfo.Create(DocumentId.CreateNewId(project.Id), "SearchNamespaces.cs",
+            loader: TextLoader.From(TextAndVersion.Create(SourceText.From(File.ReadAllText(path)), VersionStamp.Default)),
+            filePath: "/test/SearchNamespaces.cs")).Project;
+        var extraction = await new GraphBuilder(new EdgeExtractor()).ExtractProjectAsync(project, "Search", 0, null);
+        var document = extraction.Documents.Values.Single()!;
+        Assert.AreEqual(0, document.Nodes.Count);
+        CollectionAssert.AreEqual(new[] { "SearchFixtures.First", "SearchFixtures.Last" }, document.Namespaces!.ToArray());
+        var graph = new GraphStore().Stage([], [document], GraphSearchTests.Baseline);
+        var restored = new GraphStore();
+        restored.Deserialize(graph.Serialize());
+        CollectionAssert.AreEqual(document.Namespaces.ToArray(), restored.Search(["SearchNamespaces"]).Results.Single().Namespaces.ToArray());
+    }
+
+    [TestMethod]
     public void IsSourceDocument_ObjWithAltSeparator_Rejected()
     {
         Assert.IsFalse(GraphBuilder.IsSourceDocument(@"/obj/foo.cs"));

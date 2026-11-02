@@ -44,7 +44,7 @@ public sealed class GraphSynchronizer : IGraphSynchronizer, IDisposable
         try
         {
             var current = _registry.TryLoad(solutionPath)?.Capture() ?? new GraphStore();
-            var baseline = current.Baseline;
+            var baseline = current.HasSearchMetadata ? current.Baseline : null;
 
             phase = "freshness";
             var freshness = baseline is null || reevaluate

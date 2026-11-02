@@ -27,6 +27,20 @@ public class NodeClassifierTests
     }
 
     [TestMethod]
+    public void NodeMetadata_DoesNotChangeIdentityOrHash()
+    {
+        var symbol = GetMethodSymbol("namespace N; public class C { public T Convert<T>(T value) => value; }", "Convert");
+        var node = NodeClassifier.NodeFor(symbol)!;
+        Assert.AreEqual("Convert", node.Name);
+        Assert.AreEqual("N", node.Namespace);
+        Assert.AreEqual(symbol.ToDisplayString(), node.Id);
+        var old = new GraphNode(node.Id, "Other");
+        Assert.AreEqual(old, node);
+        Assert.AreEqual(old.GetHashCode(), node.GetHashCode());
+        Assert.IsNull(NodeClassifier.NodeFor(GetSymbol("public class Global { }", "Global"))!.Namespace);
+    }
+
+    [TestMethod]
     public void ClassifyTypeKind_RecordStruct_IsRecord()
     {
         var sym = GetSymbol("public record struct Point(int X, int Y);", "Point");

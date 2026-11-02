@@ -6,6 +6,7 @@ Every tool is read-only and stateless.
 
 | Question | Call first |
 |----------|------------|
+| Where are files or methods with possible names, when no path or node ID is known? | `graph_search(solutionPath, queries)` with several candidate names |
 | Who calls, implements, injects or uses a type or method? | `graph_get_dependencies` on that type or method |
 | What depends on a type or method, directly or transitively, before I change it? | `graph_impact_analysis` on that type or method |
 | How does one type or method reach another? | `graph_path_find` between them |
@@ -30,7 +31,29 @@ Every tool is read-only and stateless.
 
 ### Navigate the knowledge graph
 
-Use the graph tools to find what to read before you read it. Start from the file the user mentions.
+Use the graph tools to find what to read before you read it. When no path or node ID is known,
+call `graph_search(solutionPath, queries)` with possible file or method names, for example
+`["Login", "Authentication", "SignIn"]`. Continue with `inspect_file` on a returned `file` or
+queries using a method's unchanged `nodeId`. Otherwise start from the file the user mentions.
+
+`graph_search` matches any term by ordinal case-insensitive fragment against file names without
+`.cs` and method names without signatures; constructors match their type name. Namespaces are output
+information, not search targets; directory paths, parameter types and bodies are not searched. Terms
+are trimmed and each must have at least 3 characters. An empty list or one shorter term rejects the
+entire query before synchronization with `invalid_query` and
+`Provide at least one query term; each term must be at least 3 characters long after trimming whitespace.`
+
+The tool searches all Method nodes already in the graph, including private methods. This does not
+change the inspection tools' visibility rules. It selects exact matches first, then partial matches,
+in graph encounter order, without boosting matches to multiple terms. The limit is 50 unique
+file/method matches before grouping: one per matching file and one per matching method ID.
+
+The compact one-line response has `results` and `truncated`. Each file entry always has `file`,
+`namespaces`, `fileMatched`, and `methods`; each method has `name` and `nodeId`. Arrays remain present
+even when empty. `fileMatched` describes a file match retained within the limit; a file may appear
+through a selected method while its own matching name was omitted. Namespaces describe the whole
+file. No matches returns `{"results":[],"truncated":false}`. `truncated:true` means additional unique
+matches were omitted; there is no pagination. Narrow the terms when needed.
 
 - Every graph tool takes `solutionPath`: the absolute path of the solution's `.sln`.
 - A node ID is the symbol's fully qualified name, for example `MyApp.Services.OrderService`.

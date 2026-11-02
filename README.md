@@ -75,6 +75,7 @@ For other clients, flags, config-file paths, and troubleshooting, see [INSTALL.m
 | `inspect_file` | The structural contract of one `.cs` file. |
 | `inspect_context` | A compact view of up to 15 `.cs` files plus the references between them; `unresolved` lists the user types missing from the set. |
 | `project_scan` | Builds or refreshes the solution's graph and reports its coverage. |
+| `graph_search` | Files and methods matching possible names, grouped by file with namespaces and method node IDs. |
 | `graph_get_dependencies` | The neighbors of a node, rolled up to their declaring type, with edge counts per kind. |
 | `graph_impact_analysis` | Every type that depends on a node, directly or transitively, with its file. |
 | `graph_path_find` | The shortest dependency path between two nodes. |
@@ -86,7 +87,40 @@ shares it.
 
 ## How to use it
 
-Start from the file the user mentions:
+When you know possible names but no file path or node ID, call `graph_search` with several alternatives:
+
+```json
+{"solutionPath":"/abs/path/MyApp.sln","queries":["Login","Authentication","SignIn"]}
+```
+
+It compares file names without `.cs` and method names without signatures, using ordinal
+case-insensitive substring matching with any term. It searches every method already in the graph,
+including private methods; constructors are searched by their type name. It does not search directory
+paths, parameter types, bodies, or namespaces. Terms are trimmed, and every term needs at least
+3 characters; an empty list or a shorter term rejects the entire query before synchronization with code
+`invalid_query` and message `Provide at least one query term; each term must be at least 3 characters long after trimming whitespace.`
+
+Exact matches come first, then partial matches, preserving graph encounter order in each pass.
+The fixed limit is **50 unique file/method matches before grouping**, not 50 files. A matching file
+counts once and each matching method ID counts once, even when several terms match it. More matching
+terms do not increase priority.
+
+```json
+{"results":[{"file":"/abs/path/Auth/Session.cs","namespaces":["MyApp.Auth"],"fileMatched":false,"methods":[{"name":"Login","nodeId":"MyApp.Auth.Session.Login()"}]}],"truncated":false}
+```
+
+The response is compact JSON on one line. Every file entry has `file`, `namespaces`, `fileMatched`
+and `methods`, with empty arrays preserved as `[]`. `fileMatched` means the file-name match was
+retained within the limit; a file can appear only because a method was retained, even if its own
+name also matched outside the limit. Namespaces describe the whole file. No matches returns
+`{"results":[],"truncated":false}`. `truncated:true` means at least one unique match was omitted;
+there is no pagination. Use more specific names to narrow the search.
+
+Continue with `inspect_file` on a returned `file`, or pass a method's unchanged `nodeId` to graph
+queries. Older persisted graphs are re-extracted once to populate names and namespaces; subsequent
+unchanged queries reuse the updated graph.
+
+When the user mentions a file, start there:
 
 1. `inspect_file(path)`: read the type and build its node ID as `Namespace.TypeName`.
 2. `graph_get_dependencies(solutionPath, nodeId)`: find the neighbors worth reading.
