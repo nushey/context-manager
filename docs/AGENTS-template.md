@@ -1,11 +1,12 @@
 ## Context Manager MCP
 
-Every tool is read-only and stateless.
+Every tool is read-only on your source; graph tools persist only the graph file next to the `.sln`.
 
 **Your first step on any question about C# code must be a Context Manager call, not `grep`, `rg`, `sed`, `cat` or a file read.** Text search misses usages through `var` and interfaces, and it confuses overloads and methods with the same name.
 
 | Question | Call first |
 |----------|------------|
+| Where are files or methods with possible names, when no path or node ID is known? | `graph_search(solutionPath, queries)` with several candidate names |
 | Who calls, implements, injects or uses a type or method? | `graph_get_dependencies` on that type or method |
 | What depends on a type or method, directly or transitively, before I change it? | `graph_impact_analysis` on that type or method |
 | How does one type or method reach another? | `graph_path_find` between them |
@@ -30,7 +31,7 @@ Every tool is read-only and stateless.
 
 ### Navigate the knowledge graph
 
-Use the graph tools to find what to read before you read it. Start from the file the user mentions.
+Use the graph tools to find what to read before you read it. Start from the file the user mentions; when no file path or node ID is known, call `graph_search` first.
 
 - Every graph tool takes `solutionPath`: the absolute path of the solution's `.sln`.
 - A node ID is the symbol's fully qualified name, for example `MyApp.Services.OrderService`.
@@ -44,6 +45,16 @@ Use the graph tools to find what to read before you read it. Start from the file
 | 2 | `graph_get_dependencies(solutionPath, nodeId)` | Find adjacent files worth reading |
 | 3 | `inspect_file` on the `file` of relevant neighbors | Read only what you need |
 | 4 | `graph_impact_analysis(solutionPath, nodeId)` | Assess the blast radius before changing anything |
+
+**`graph_search(solutionPath, queries)`**: pass several possible file or method names, for example `["Login", "Authentication", "SignIn"]`. Then call `inspect_file` on a returned `file`, or pass a method's `nodeId` unchanged to the other graph tools.
+
+- Matching: a term matches an ordinal, case-insensitive fragment of a file name without `.cs` or a method name without its signature; any term is enough. Constructors match their type name. Directory paths, parameter types, bodies and namespaces are not searched; namespaces are output only.
+- Scope: every Method node already in the graph, including private methods. The inspection tools' visibility rules do not change.
+- Terms: trimmed, each at least 3 characters. An empty list or one shorter term rejects the entire query before synchronization with `invalid_query` and `Provide at least one query term; each term must be at least 3 characters long after trimming whitespace.`
+- Order: exact matches first, then partial matches, each in graph encounter order. Matching several terms does not boost a result.
+- Limit: 50 unique file/method matches before grouping, one per matching file and one per matching method ID. `truncated: true` means more matches were omitted and there is no pagination; narrow the terms.
+- Response: compact one-line JSON with `results` and `truncated`. Each file entry always has `file`, `namespaces`, `fileMatched` and `methods`; each method has `name` and `nodeId`. Arrays stay present when empty. `namespaces` covers the whole file. No matches returns `{"results":[],"truncated":false}`.
+- `fileMatched` is true only when the file-name match was kept within the limit; a file can appear through a kept method while its own matching name was omitted.
 
 **`graph_get_dependencies` results** have one entry per neighbor type and direction:
 

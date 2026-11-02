@@ -79,6 +79,58 @@ public class GraphSynchronizerTests : FixtureTest
 
     [TestMethod]
     [Timeout(180_000)]
+    public async Task PreviousMetadata_ReextractsOnceAndFailurePreservesPreviousGraph()
+    {
+        var directory = CopyFixture();
+        var synchronizer = CreateSynchronizer(new GraphRegistry());
+        var initial = await SyncAsync(synchronizer, directory);
+        var path = GraphRegistry.GetGraphPath(Sln(directory));
+        var payload = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        RemoveMetadata(payload);
+        var previousJson = payload.ToJsonString();
+        File.WriteAllText(path, previousJson);
+        var registry = new GraphRegistry();
+        var previous = registry.TryLoad(Sln(directory))!.Capture();
+        Assert.IsFalse(previous.HasSearchMetadata);
+        Assert.AreEqual(initial.Graph.NodeCount, previous.NodeCount);
+        using (var failing = new GraphSynchronizer(new GraphBuilder(new EdgeExtractor()), registry,
+            () => throw new InvalidOperationException("Unavailable MSBuild")))
+        {
+            await Assert.ThrowsExactlyAsync<GraphSyncException>(() => failing.SynchronizeAsync(Sln(directory), false));
+            Assert.AreEqual(previousJson, File.ReadAllText(path));
+            Assert.AreEqual(previous.Serialize(), registry.TryLoad(Sln(directory))!.Serialize());
+        }
+        var migratedSynchronizer = CreateSynchronizer(registry);
+        var migrated = await SyncAsync(migratedSynchronizer, directory);
+        Assert.IsTrue(migrated.Graph.HasSearchMetadata);
+        Assert.AreEqual(initial.Graph.Documents.Count, migrated.ExtractedDocuments.Count);
+        Assert.IsTrue(migrated.Changed);
+        var persisted = (File.ReadAllText(path), File.GetLastWriteTimeUtc(path));
+        var unchanged = await SyncAsync(migratedSynchronizer, directory);
+        Assert.AreEqual(0, unchanged.ExtractedDocuments.Count);
+        Assert.IsFalse(unchanged.Changed);
+        Assert.AreEqual(persisted, (File.ReadAllText(path), File.GetLastWriteTimeUtc(path)));
+
+        static void RemoveMetadata(System.Text.Json.Nodes.JsonNode node)
+        {
+            if (node is System.Text.Json.Nodes.JsonObject obj)
+            {
+                obj.Remove("name");
+                obj.Remove("namespace");
+                obj.Remove("namespaces");
+                foreach (var child in obj.ToList())
+                    if (child.Value is not null)
+                        RemoveMetadata(child.Value);
+            }
+            else if (node is System.Text.Json.Nodes.JsonArray array)
+                foreach (var child in array)
+                    if (child is not null)
+                        RemoveMetadata(child);
+        }
+    }
+
+    [TestMethod]
+    [Timeout(180_000)]
     public async Task MissingGraph_BuildsPersistsProvenanceAndMatchesFreshScan()
     {
         var directory = CopyFixture();

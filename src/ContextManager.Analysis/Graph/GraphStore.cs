@@ -18,13 +18,13 @@ public class GraphStore
             string? revision,
             GraphBaseline? baseline)
         {
-            Documents = documents;
+            Documents = documents.Values.OrderBy(d => d.ProjectOrder).ThenBy(d => d.DocumentOrder).ToDictionary(d => d.Key);
             Revision = revision;
             Baseline = baseline;
 
             var references = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
             var edges = new HashSet<EdgeKey>();
-            foreach (var document in documents.Values.OrderBy(d => d.ProjectOrder).ThenBy(d => d.DocumentOrder))
+            foreach (var document in Documents.Values)
             {
                 foreach (var node in document.Nodes)
                     Nodes.TryAdd(node.Id, node);
@@ -69,6 +69,8 @@ public class GraphStore
         }
     }
 
+    private const int SearchMatchLimit = 50;
+
     private volatile State _state;
 
     public GraphStore()
@@ -88,6 +90,9 @@ public class GraphStore
     internal GraphBaseline? Baseline => _state.Baseline;
 
     internal IReadOnlyDictionary<(string ProjectKey, string Path), GraphDocumentRecord> Documents => _state.Documents;
+
+    internal bool HasSearchMetadata => _state.Documents.Values.All(d => d.Namespaces is not null)
+        && _state.Nodes.Values.All(n => n.Name is not null);
 
     public bool TryGetNode(string id, out GraphNode? node)
     {
@@ -365,6 +370,95 @@ public class GraphStore
         return [];
     }
 
+    public GraphSearchResult Search(IReadOnlyList<string> queries, CancellationToken ct = default)
+    {
+        var state = _state;
+        var files = new Dictionary<string, (List<string> Namespaces, HashSet<string> NamespaceSet, List<GraphNode> Methods)>(StringComparer.Ordinal);
+        foreach (var document in state.Documents.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            AddFile(document.Path, document.Namespaces ?? []);
+        }
+
+        foreach (var node in state.Nodes.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (node.File is not { } path)
+                continue;
+
+            AddFile(path, node.Namespace is { } ns ? [ns] : []);
+            if (node.Kind == NodeClassifier.MethodNodeKind)
+                files[path].Methods.Add(node);
+        }
+
+        var selectedPaths = new List<string>();
+        var selectedMethods = new Dictionary<string, List<GraphSearchMethod>>(StringComparer.Ordinal);
+        var matchedFiles = new HashSet<string>(StringComparer.Ordinal);
+        var count = 0;
+        foreach (var exact in new[] { true, false })
+        {
+            foreach (var (path, file) in files)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (Matches(Path.GetFileNameWithoutExtension(path), exact))
+                {
+                    if (count == SearchMatchLimit)
+                        return BuildResult(true);
+
+                    Select(path);
+                    matchedFiles.Add(path);
+                    count++;
+                }
+
+                foreach (var method in file.Methods)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (!Matches(method.Name!, exact))
+                        continue;
+
+                    if (count == SearchMatchLimit)
+                        return BuildResult(true);
+
+                    Select(path).Add(new GraphSearchMethod(method.Name!, method.Id));
+                    count++;
+                }
+            }
+        }
+
+        return BuildResult(false);
+
+        void AddFile(string path, IReadOnlyList<string> namespaces)
+        {
+            if (!files.TryGetValue(path, out var file))
+                files[path] = file = ([], new HashSet<string>(StringComparer.Ordinal), []);
+
+            foreach (var ns in namespaces)
+                if (file.NamespaceSet.Add(ns))
+                    file.Namespaces.Add(ns);
+        }
+
+        bool Matches(string name, bool exact)
+        {
+            var isExact = queries.Any(q => name.Equals(q, StringComparison.OrdinalIgnoreCase));
+            return exact ? isExact : !isExact && queries.Any(q => name.Contains(q, StringComparison.OrdinalIgnoreCase));
+        }
+
+        List<GraphSearchMethod> Select(string path)
+        {
+            if (!selectedMethods.TryGetValue(path, out var methods))
+            {
+                selectedMethods[path] = methods = [];
+                selectedPaths.Add(path);
+            }
+
+            return methods;
+        }
+
+        GraphSearchResult BuildResult(bool truncated) => new(
+            selectedPaths.Select(path => new GraphSearchFile(path, files[path].Namespaces, matchedFiles.Contains(path), selectedMethods[path])).ToList(),
+            truncated);
+    }
+
     public string Serialize()
     {
         var s = _state;
@@ -374,7 +468,7 @@ public class GraphStore
             s.Documents.Values
                 .OrderBy(d => d.ProjectOrder)
                 .ThenBy(d => d.DocumentOrder)
-                .Select(d => new DocumentDto(d.ProjectKey, d.Path, d.Checksum, d.ProjectOrder, d.DocumentOrder, d.Nodes, d.Edges))
+                .Select(d => new DocumentDto(d.ProjectKey, d.Path, d.Checksum, d.ProjectOrder, d.DocumentOrder, d.Nodes, d.Edges, d.Namespaces))
                 .ToList());
 
         return JsonSerializer.Serialize(payload, AnalysisJson.Options);
@@ -397,7 +491,7 @@ public class GraphStore
         }
 
         var documents = payload.Documents
-            .Select(d => new GraphDocumentRecord(d.Project, d.Path, d.Checksum, d.ProjectOrder, d.DocumentOrder, d.Nodes, d.Edges))
+            .Select(d => new GraphDocumentRecord(d.Project, d.Path, d.Checksum, d.ProjectOrder, d.DocumentOrder, d.Nodes, d.Edges, d.Namespaces))
             .ToDictionary(d => d.Key);
         _state = new State(documents, payload.Revision, payload.Baseline);
     }
@@ -431,5 +525,6 @@ public class GraphStore
         int ProjectOrder,
         int DocumentOrder,
         IReadOnlyList<GraphNode> Nodes,
-        IReadOnlyList<GraphEdge> Edges);
+        IReadOnlyList<GraphEdge> Edges,
+        IReadOnlyList<string>? Namespaces = null);
 }

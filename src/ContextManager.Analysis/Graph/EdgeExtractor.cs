@@ -181,7 +181,8 @@ public class EdgeExtractor
             return;
 
         var parameters = string.Join(", ", entryPoint.Parameters.Select(p => p.Type.ToDisplayString()));
-        var entryPointNode = new GraphNode($"{programNode.Id}.{entryPoint.MetadataName}({parameters})", "Method", programNode.File);
+        var entryPointNode = new GraphNode($"{programNode.Id}.{entryPoint.MetadataName}({parameters})", NodeClassifier.MethodNodeKind, programNode.File,
+            entryPoint.Name, programNode.Namespace);
 
         contribution.Declare(programNode);
         Contain(programNode, entryPointNode, contribution);
